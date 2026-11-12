@@ -1,0 +1,12 @@
+# Normalise line endings in the repo; check out with the platform's native endings.
+* text=auto
+
+# Binary assets (for when images, audio or fonts are added)
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.wav  binary
+*.aif  binary
+*.aiff binary
+*.ttf  binary
+*.otf  binary

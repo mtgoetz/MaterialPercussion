@@ -20,14 +20,21 @@ each is excited (the mode shape at the strike position, filtered by mallet hardn
 
 ## Build (Windows)
 
-Requires Visual Studio 2022 (or Build Tools) with the C++ workload, CMake >= 3.22 and Git.
+Requires Visual Studio 2026 with the "Desktop development with C++" workload (it bundles
+CMake and Ninja) and Git. JUCE is downloaded automatically on the first configure.
+
+**In Visual Studio:** File > Open > Folder, pick this folder, choose the `x64 Release`
+(or `x64 Debug`) preset in the toolbar, then Build > Build All. Output goes to
+`out/build/<preset>/`.
+
+**From a Developer PowerShell for VS:**
 
 ```
-cmake -B build -G "Visual Studio 17 2022"
-cmake --build build --config Release
+cmake --preset vs2026
+cmake --build --preset vs2026-release
 ```
 
-Outputs:
+Outputs (for the `vs2026` preset):
 
 - `build/MaterialPercussion_artefacts/Release/VST3/Material Percussion.vst3`
 - `build/MaterialPercussion_artefacts/Release/Standalone/Material Percussion.exe`

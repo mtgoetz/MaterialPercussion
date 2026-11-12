@@ -1,4 +1,41 @@
+# ---- Build output -------------------------------------------------------------
+# Command-line builds (cmake -B build) and Visual Studio's CMake folder (out/build/<preset>)
 build/
 out/
+cmake-build-*/
+
+# In-source CMake leftovers, in case anyone configures in the source tree
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+_deps/
+
+# Compiled artefacts that can end up outside the build folders
+*.vst3
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.exp
+
+# ---- Visual Studio -----------------------------------------------------------
+# Per-machine IDE state created when the folder is opened in VS
 .vs/
 *.user
+*.suo
+*.vcxproj.user
+# Personal CMake presets (the shared ones live in CMakePresets.json)
+CMakeUserPresets.json
+
+# ---- Other editors / tools ---------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.claude/settings.local.json
+
+# ---- OS junk -----------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
