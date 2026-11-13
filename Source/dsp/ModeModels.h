@@ -8,9 +8,13 @@
 namespace mp
 {
 constexpr int kMaxModes = 64;
-constexpr int kNumModels = 6;
+constexpr int kNumModels = 8;
 
-enum class Model : int { Membrane = 0, Wood, Metal, Glass, Bell, String };
+// Membrane..String are modal (a bank of resonators); Tube and Wire are digital waveguides
+// (delay-line loops), which bend and buzz more naturally under the nonlinear controls.
+enum class Model : int { Membrane = 0, Wood, Metal, Glass, Bell, String, Tube, Wire };
+
+inline bool isWaveguide (Model m) noexcept { return m == Model::Tube || m == Model::Wire; }
 
 struct ModelInfo
 {
@@ -56,6 +60,9 @@ void initModeTables();
 // Pure, allocation-free: safe to call on the audio thread.
 void computeModes (const ModeParams& params, ModeSet& out) noexcept;
 
+// T60 of a mode at `ratio` x the fundamental (the model's decay law).
+float modeDecaySeconds (const ModeParams& params, double ratio) noexcept;
+
 //==============================================================================
 // Strike-position mappings shared by the DSP and the clickable object view.
 inline double membraneRadius (double p) noexcept { return 0.02 + 0.9 * p; }  // fraction of head radius
@@ -63,6 +70,8 @@ inline double barX (double p) noexcept           { return 0.5 - 0.48 * p; }  // 
 inline double plateX (double p) noexcept         { return 0.5 - 0.42 * p; }
 inline double plateY (double p) noexcept         { return 0.5 - 0.31 * p; }
 inline double stringX (double p) noexcept        { return 0.5 - 0.48 * p; }
+inline double tubeX (double p) noexcept          { return 0.5 - 0.46 * p; }  // fraction of tube length
+inline double wireX (double p) noexcept          { return 0.5 - 0.48 * p; }
 inline double plateAspect (double shape) noexcept { return 1.013 * (1.0 + 1.5 * shape); }
 
 // Mallet contact time: soft felt (6 ms) to hard stick (0.08 ms).

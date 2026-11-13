@@ -3,10 +3,12 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "Params.h"
-#include "dsp/ModalVoice.h"
+#include "dsp/Voice.h"
 
 #include <array>
 #include <atomic>
+#include <string_view>
+#include <unordered_map>
 
 class MaterialPercussionProcessor : public juce::AudioProcessor
 {
@@ -49,8 +51,11 @@ public:
 
     // Peak amplitude of each mode since the UI last read it (UI exchanges with 0).
     std::array<std::atomic<float>, mp::kMaxModes> modeLevels {};
+    std::array<std::atomic<float>, mp::Voice::kBodyModes> bodyLevels {};
 
     mp::ModeParams getModeParams() const noexcept;
+    bool getBodyParams (mp::ModeParams& out) const noexcept; // false when the body is off
+    mp::VoiceSettings readVoiceSettings() const noexcept;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -58,28 +63,19 @@ private:
     void handleMidi (const juce::MidiMessage& message) noexcept;
     void noteOn (int note, float velocity) noexcept;
     void renderVoices (juce::AudioBuffer<float>& buffer, int start, int numSamples) noexcept;
-    mp::VoiceSettings readVoiceSettings() const noexcept;
     void publishModeLevels() noexcept;
+    float param (const char* id) const noexcept;
 
-    std::array<mp::ModalVoice, kNumVoices> voices;
-    mp::ModeSet modeSet;
-    mp::ModeParams lastModeParams;
-    int modeSetVersion = 0;
-    mp::VoiceSettings settings;
+    std::array<mp::Voice, kNumVoices> voices;
+    mp::ModeSet modeSet, bodyModeSet;
+    mp::ModeParams lastModeParams, lastBodyParams;
+    bool lastBodyOn = false;
+    int modeSetVersion = 0, bodyModeSetVersion = 0;
+    mp::RenderContext context;
     juce::SmoothedValue<float> outputGain { 1.0f };
 
-    std::atomic<float>* pModel = nullptr;
-    std::atomic<float>* pPitch = nullptr;
-    std::atomic<float>* pKeyTrack = nullptr;
-    std::atomic<float>* pDecay = nullptr;
-    std::atomic<float>* pDamping = nullptr;
-    std::atomic<float>* pShape = nullptr;
-    std::atomic<float>* pPosition = nullptr;
-    std::atomic<float>* pHardness = nullptr;
-    std::atomic<float>* pNoise = nullptr;
-    std::atomic<float>* pDrop = nullptr;
-    std::atomic<float>* pWidth = nullptr;
-    std::atomic<float>* pGain = nullptr;
+    // Raw parameter pointers, looked up once (keyed by id text: no allocation on lookup)
+    std::unordered_map<std::string_view, std::atomic<float>*> rawParams;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MaterialPercussionProcessor)
 };

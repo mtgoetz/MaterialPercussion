@@ -28,6 +28,18 @@ float secondsValue (const juce::String& t)
 
 juce::String dbText (float v, int) { return juce::String (v, 1) + " dB"; }
 
+juce::String semitoneText (float v, int)
+{
+    return (v > 0.0f ? "+" : "") + juce::String (v, 1) + " st";
+}
+
+juce::String colorText (float v, int)
+{
+    if (v < 0.47f) return "Dark " + juce::String (juce::roundToInt ((0.47f - v) / 0.47f * 100.0f)) + "%";
+    if (v > 0.53f) return "Bright " + juce::String (juce::roundToInt ((v - 0.53f) / 0.47f * 100.0f)) + "%";
+    return "Neutral";
+}
+
 // Transparent below the knee, smoothly saturating to a ceiling of 1.0 above it.
 inline float softClip (float x) noexcept
 {
@@ -38,6 +50,14 @@ inline float softClip (float x) noexcept
     const float y = knee + (1.0f - knee) * std::tanh ((a - knee) / (1.0f - knee));
     return std::copysign (y, x);
 }
+
+const char* const kAllParamIds[] = {
+    ids::model, ids::pitch, ids::keyTrack, ids::decay, ids::damping, ids::shape, ids::position,
+    ids::exciter, ids::hardness, ids::color, ids::length, ids::bounce, ids::noise,
+    ids::drop, ids::tension, ids::rattle, ids::gap,
+    ids::bodyModel, ids::bodyTune, ids::bodyDecay, ids::bodyBlend, ids::bodyCouple,
+    ids::width, ids::gain,
+};
 } // namespace
 
 //==============================================================================
@@ -46,10 +66,29 @@ juce::AudioProcessorValueTreeState::ParameterLayout MaterialPercussionProcessor:
     using namespace juce;
     AudioProcessorValueTreeState::ParameterLayout layout;
 
-    StringArray modelNames;
-    for (int i = 0; i < mp::kNumModels; ++i)
-        modelNames.add (mp::getModelInfo ((mp::Model) i).name);
+    auto addPercent = [&layout] (const char* id, const char* name, float defaultValue)
+    {
+        layout.add (std::make_unique<AudioParameterFloat> (
+            ParameterID { id, 1 }, name, NormalisableRange<float> (0.0f, 1.0f), defaultValue,
+            AudioParameterFloatAttributes().withStringFromValueFunction (percentText).withValueFromStringFunction (percentValue)));
+    };
 
+    auto addSeconds = [&layout] (const char* id, const char* name, float lo, float hi, float centre, float defaultValue)
+    {
+        NormalisableRange<float> range (lo, hi);
+        range.setSkewForCentre (centre);
+        layout.add (std::make_unique<AudioParameterFloat> (
+            ParameterID { id, 1 }, name, range, defaultValue,
+            AudioParameterFloatAttributes().withStringFromValueFunction (secondsText).withValueFromStringFunction (secondsValue)));
+    };
+
+    // --- Object
+    StringArray modelNames, bodyNames { "Off" };
+    for (int i = 0; i < mp::kNumModels; ++i)
+    {
+        modelNames.add (mp::getModelInfo ((mp::Model) i).name);
+        bodyNames.add (mp::getModelInfo ((mp::Model) i).name);
+    }
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ids::model, 1 }, "Model", modelNames, 0));
 
     NormalisableRange<float> pitchRange (20.0f, 2000.0f);
@@ -59,28 +98,42 @@ juce::AudioProcessorValueTreeState::ParameterLayout MaterialPercussionProcessor:
         AudioParameterFloatAttributes().withStringFromValueFunction (hzText).withValueFromStringFunction (hzValue)));
 
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { ids::keyTrack, 1 }, "Key Track", true));
-
-    NormalisableRange<float> decayRange (0.05f, 10.0f);
-    decayRange.setSkewForCentre (1.0f);
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { ids::decay, 1 }, "Decay", decayRange, 1.0f,
-        AudioParameterFloatAttributes().withStringFromValueFunction (secondsText).withValueFromStringFunction (secondsValue)));
-
-    auto addPercent = [&layout] (const char* id, const char* name, float defaultValue)
-    {
-        layout.add (std::make_unique<AudioParameterFloat> (
-            ParameterID { id, 1 }, name, NormalisableRange<float> (0.0f, 1.0f), defaultValue,
-            AudioParameterFloatAttributes().withStringFromValueFunction (percentText).withValueFromStringFunction (percentValue)));
-    };
-
+    addSeconds (ids::decay, "Decay", 0.05f, 10.0f, 1.0f, 1.0f);
     addPercent (ids::damping, "Damping", 0.5f);
     addPercent (ids::shape, "Shape", 0.0f);
     addPercent (ids::position, "Position", 0.3f);
-    addPercent (ids::hardness, "Hardness", 0.5f);
-    addPercent (ids::noise, "Noise", 0.0f);
-    addPercent (ids::drop, "Pitch Drop", 0.1f);
-    addPercent (ids::width, "Width", 0.3f);
 
+    // --- Exciter
+    StringArray exciterNames;
+    for (int i = 0; i < mp::kNumExciters; ++i)
+        exciterNames.add (mp::getExciterInfo ((mp::ExciterType) i).name);
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ids::exciter, 1 }, "Exciter", exciterNames, 0));
+
+    addPercent (ids::hardness, "Hardness", 0.5f);
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::color, 1 }, "Colour", NormalisableRange<float> (0.0f, 1.0f), 0.5f,
+        AudioParameterFloatAttributes().withStringFromValueFunction (colorText)));
+    addSeconds (ids::length, "Length", 0.02f, 8.0f, 0.6f, 1.0f);
+    addPercent (ids::bounce, "Bounce", 0.0f);
+    addPercent (ids::noise, "Noise", 0.0f);
+
+    // --- Nonlinear
+    addPercent (ids::drop, "Pitch Drop", 0.1f);
+    addPercent (ids::tension, "Tension", 0.0f);
+    addPercent (ids::rattle, "Rattle", 0.0f);
+    addPercent (ids::gap, "Gap", 0.3f);
+
+    // --- Body
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { ids::bodyModel, 1 }, "Body", bodyNames, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::bodyTune, 1 }, "Body Tune", NormalisableRange<float> (-24.0f, 24.0f, 0.01f), 0.0f,
+        AudioParameterFloatAttributes().withStringFromValueFunction (semitoneText)));
+    addSeconds (ids::bodyDecay, "Body Decay", 0.05f, 10.0f, 1.0f, 0.6f);
+    addPercent (ids::bodyBlend, "Body Blend", 0.0f);
+    addPercent (ids::bodyCouple, "Body Couple", 0.5f);
+
+    // --- Output
+    addPercent (ids::width, "Width", 0.3f);
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { ids::gain, 1 }, "Output", NormalisableRange<float> (-36.0f, 6.0f), -6.0f,
         AudioParameterFloatAttributes().withStringFromValueFunction (dbText)));
@@ -94,48 +147,79 @@ MaterialPercussionProcessor::MaterialPercussionProcessor()
 {
     mp::initModeTables();
 
-    pModel    = apvts.getRawParameterValue (ids::model);
-    pPitch    = apvts.getRawParameterValue (ids::pitch);
-    pKeyTrack = apvts.getRawParameterValue (ids::keyTrack);
-    pDecay    = apvts.getRawParameterValue (ids::decay);
-    pDamping  = apvts.getRawParameterValue (ids::damping);
-    pShape    = apvts.getRawParameterValue (ids::shape);
-    pPosition = apvts.getRawParameterValue (ids::position);
-    pHardness = apvts.getRawParameterValue (ids::hardness);
-    pNoise    = apvts.getRawParameterValue (ids::noise);
-    pDrop     = apvts.getRawParameterValue (ids::drop);
-    pWidth    = apvts.getRawParameterValue (ids::width);
-    pGain     = apvts.getRawParameterValue (ids::gain);
+    for (const char* id : kAllParamIds)
+    {
+        auto* p = apvts.getRawParameterValue (id);
+        jassert (p != nullptr);
+        rawParams[id] = p;
+    }
 
     for (auto& l : modeLevels)
+        l.store (0.0f);
+    for (auto& l : bodyLevels)
         l.store (0.0f);
 
     lastModeParams = getModeParams();
     mp::computeModes (lastModeParams, modeSet);
+    lastBodyOn = getBodyParams (lastBodyParams);
+    mp::computeModes (lastBodyParams, bodyModeSet);
+}
+
+float MaterialPercussionProcessor::param (const char* id) const noexcept
+{
+    const auto it = rawParams.find (id);
+    return it != rawParams.end() ? it->second->load() : 0.0f;
 }
 
 //==============================================================================
 mp::ModeParams MaterialPercussionProcessor::getModeParams() const noexcept
 {
     mp::ModeParams p;
-    p.model = (mp::Model) juce::jlimit (0, mp::kNumModels - 1, (int) std::lround (pModel->load()));
-    p.shape = pShape->load();
-    p.position = pPosition->load();
-    p.decay = pDecay->load();
-    p.damping = pDamping->load();
+    p.model = (mp::Model) juce::jlimit (0, mp::kNumModels - 1, (int) std::lround (param (ids::model)));
+    p.shape = param (ids::shape);
+    p.position = param (ids::position);
+    p.decay = param (ids::decay);
+    p.damping = param (ids::damping);
     return p;
+}
+
+bool MaterialPercussionProcessor::getBodyParams (mp::ModeParams& out) const noexcept
+{
+    const int choice = juce::jlimit (0, mp::kNumModels, (int) std::lround (param (ids::bodyModel)));
+    out = getModeParams();
+    out.model = (mp::Model) juce::jmax (0, choice - 1);
+    out.decay = param (ids::bodyDecay);
+    out.shape = 0.5f;
+    return choice > 0;
 }
 
 mp::VoiceSettings MaterialPercussionProcessor::readVoiceSettings() const noexcept
 {
     mp::VoiceSettings s;
-    s.pitchHz = pPitch->load();
-    s.keyTrack = pKeyTrack->load() > 0.5f;
-    s.hardness = pHardness->load();
-    s.noise = pNoise->load();
-    s.drop = pDrop->load();
-    s.width = pWidth->load();
-    s.gain = mp::getModelInfo (lastModeParams.model).gain;
+    s.pitchHz = param (ids::pitch);
+    s.keyTrack = param (ids::keyTrack) > 0.5f;
+
+    s.exciter = (mp::ExciterType) juce::jlimit (0, mp::kNumExciters - 1, (int) std::lround (param (ids::exciter)));
+    s.hardness = param (ids::hardness);
+    s.color = param (ids::color);
+    s.length = param (ids::length);
+    s.bounce = param (ids::bounce);
+    s.noise = param (ids::noise);
+
+    s.drop = param (ids::drop);
+    s.tension = param (ids::tension);
+    s.rattle = param (ids::rattle);
+    s.gap = param (ids::gap);
+
+    mp::ModeParams bodyParams;
+    s.bodyOn = getBodyParams (bodyParams);
+    s.bodyTune = param (ids::bodyTune);
+    s.bodyBlend = param (ids::bodyBlend);
+    s.bodyCouple = param (ids::bodyCouple);
+    s.bodyGain = mp::getModelInfo (bodyParams.model).gain;
+
+    s.width = param (ids::width);
+    s.gain = mp::getModelInfo (getModeParams().model).gain;
     return s;
 }
 
@@ -147,9 +231,12 @@ void MaterialPercussionProcessor::prepareToPlay (double sampleRate, int)
     lastModeParams = getModeParams();
     mp::computeModes (lastModeParams, modeSet);
     ++modeSetVersion;
+    lastBodyOn = getBodyParams (lastBodyParams);
+    mp::computeModes (lastBodyParams, bodyModeSet);
+    ++bodyModeSetVersion;
 
     outputGain.reset (sampleRate, 0.02);
-    outputGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pGain->load()));
+    outputGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (param (ids::gain)));
     keyboardState.reset();
 }
 
@@ -178,10 +265,26 @@ void MaterialPercussionProcessor::processBlock (juce::AudioBuffer<float>& buffer
         lastModeParams = params;
         ++modeSetVersion;
     }
-    settings = readVoiceSettings();
+
+    mp::ModeParams bodyParams;
+    const bool bodyOn = getBodyParams (bodyParams);
+    if (bodyOn != lastBodyOn || ! (bodyParams == lastBodyParams))
+    {
+        mp::computeModes (bodyParams, bodyModeSet);
+        lastBodyParams = bodyParams;
+        lastBodyOn = bodyOn;
+        ++bodyModeSetVersion;
+    }
+
+    context.modes = &modeSet;
+    context.modesVersion = modeSetVersion;
+    context.bodyModes = &bodyModeSet;
+    context.bodyVersion = bodyModeSetVersion;
+    context.params = params;
+    context.settings = readVoiceSettings();
 
     for (auto& v : voices)
-        v.clearModePeaks();
+        v.clearPeaks();
 
     // Render between MIDI events for sample-accurate hits.
     int position = 0;
@@ -199,7 +302,7 @@ void MaterialPercussionProcessor::processBlock (juce::AudioBuffer<float>& buffer
         renderVoices (buffer, position, numSamples - position);
 
     // Output gain + safety soft clip
-    outputGain.setTargetValue (juce::Decibels::decibelsToGain (pGain->load()));
+    outputGain.setTargetValue (juce::Decibels::decibelsToGain (param (ids::gain)));
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (1);
     for (int i = 0; i < numSamples; ++i)
@@ -217,22 +320,24 @@ void MaterialPercussionProcessor::renderVoices (juce::AudioBuffer<float>& buffer
     auto* left = buffer.getWritePointer (0, start);
     auto* right = buffer.getWritePointer (1, start);
     for (auto& v : voices)
-        v.render (left, right, numSamples, modeSet, modeSetVersion, settings);
+        v.render (left, right, numSamples, context);
 }
 
 void MaterialPercussionProcessor::handleMidi (const juce::MidiMessage& message) noexcept
 {
     if (message.isNoteOn())
         noteOn (message.getNoteNumber(), message.getFloatVelocity());
+    else if (message.isNoteOff())
+        for (auto& v : voices)
+            v.release (message.getNoteNumber()); // only ends bows/scrapes; struck objects ring on
     else if (message.isAllSoundOff())
         for (auto& v : voices)
             v.reset();
-    // Note-offs are ignored on purpose: struck objects ring out naturally.
 }
 
 void MaterialPercussionProcessor::noteOn (int note, float velocity) noexcept
 {
-    mp::ModalVoice* target = nullptr;
+    mp::Voice* target = nullptr;
 
     // Re-strike an object that is already ringing on this note...
     for (auto& v : voices)
@@ -245,23 +350,37 @@ void MaterialPercussionProcessor::noteOn (int note, float velocity) noexcept
 
     // ...otherwise steal the quietest one.
     if (target == nullptr)
+    {
         target = &*std::min_element (voices.begin(), voices.end(),
                                      [] (const auto& a, const auto& b) { return a.getLevel() < b.getLevel(); });
+        target->reset();
+    }
 
-    target->strike (note, velocity, settings);
+    target->strike (note, velocity, context);
 }
 
 void MaterialPercussionProcessor::publishModeLevels() noexcept
 {
+    auto publish = [] (auto& slots, int index, float peak)
+    {
+        auto& slot = slots[(size_t) index];
+        if (peak > slot.load (std::memory_order_relaxed))
+            slot.store (peak, std::memory_order_relaxed);
+    };
+
     for (int m = 0; m < mp::kMaxModes; ++m)
     {
         float peak = 0.0f;
         for (const auto& v : voices)
             peak = std::max (peak, v.getModePeak (m));
-
-        auto& slot = modeLevels[(size_t) m];
-        if (peak > slot.load (std::memory_order_relaxed))
-            slot.store (peak, std::memory_order_relaxed);
+        publish (modeLevels, m, peak);
+    }
+    for (int m = 0; m < mp::Voice::kBodyModes; ++m)
+    {
+        float peak = 0.0f;
+        for (const auto& v : voices)
+            peak = std::max (peak, v.getBodyPeak (m));
+        publish (bodyLevels, m, peak);
     }
 }
 

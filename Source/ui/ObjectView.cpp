@@ -29,15 +29,19 @@ void ObjectView::setTheme (const Theme& t)
     repaint();
 }
 
-void ObjectView::update (mp::Model newModel, float newShape, float newPosition, float newEnergy)
+void ObjectView::update (mp::Model newModel, float newShape, float newPosition, float newEnergy,
+                         mp::ExciterType newExciter, const juce::String& newBodyName)
 {
-    const bool changed = newModel != model || newShape != shape || newPosition != position;
+    const bool changed = newModel != model || newShape != shape || newPosition != position
+                      || newExciter != exciter || newBodyName != bodyName;
     const bool animating = newEnergy > 0.002f || energy > 0.002f;
 
     model = newModel;
     shape = newShape;
     position = newPosition;
     energy = newEnergy;
+    exciter = newExciter;
+    bodyName = newBodyName;
     phase += 1.9f;
 
     if (changed || animating)
@@ -88,9 +92,18 @@ ObjectView::Geometry ObjectView::geometry() const
             break;
 
         case mp::Model::String:
+        case mp::Model::Wire:
             geo.x0 = geo.area.getX() + w * 0.04f;
             geo.x1 = geo.area.getRight() - w * 0.04f;
             break;
+
+        case mp::Model::Tube:
+        {
+            const float tw = w * 0.9f;
+            const float th = std::min (h * 0.24f, tw * 0.16f);
+            geo.rect = juce::Rectangle<float> (tw, th).withCentre (geo.centre);
+            break;
+        }
     }
     return geo;
 }
@@ -125,6 +138,12 @@ juce::Point<float> ObjectView::strikePointFor (float pos) const
         }
         case mp::Model::String:
             return { juce::jmap ((float) mp::stringX (pos), geo.x0, geo.x1), geo.centre.y };
+
+        case mp::Model::Wire:
+            return { juce::jmap ((float) mp::wireX (pos), geo.x0, geo.x1), geo.centre.y };
+
+        case mp::Model::Tube:
+            return { geo.rect.getX() + geo.rect.getWidth() * (float) mp::tubeX (pos), geo.rect.getY() };
     }
     return geo.centre;
 }
@@ -161,7 +180,12 @@ float ObjectView::positionFor (juce::Point<float> pt) const
             break;
 
         case mp::Model::String:
+        case mp::Model::Wire:
             p = std::abs (0.5f - (pt.x - geo.x0) / (geo.x1 - geo.x0)) / 0.48f;
+            break;
+
+        case mp::Model::Tube:
+            p = std::abs (0.5f - (pt.x - geo.rect.getX()) / geo.rect.getWidth()) / 0.46f;
             break;
     }
     return juce::jlimit (0.0f, 1.0f, p);
@@ -220,13 +244,115 @@ void ObjectView::paint (juce::Graphics& g)
             case mp::Model::Metal:    drawMetal (g, geo);    break;
             case mp::Model::Glass:    drawGlass (g, geo);    break;
             case mp::Model::Bell:     drawBell (g, geo);     break;
-            case mp::Model::String:   drawString (g, geo);   break;
+            case mp::Model::String:   drawString (g, geo, false); break;
+            case mp::Model::Wire:     drawString (g, geo, true);  break;
+            case mp::Model::Tube:     drawTube (g, geo);          break;
         }
     }
 
     if (hoverPosition >= 0.0f)
         drawMarker (g, strikePointFor (hoverPosition), 0.45f, false);
+    drawExciter (g, strikePointFor (position));
     drawMarker (g, strikePointFor (position), 1.0f, true);
+
+    // Exciter name by the strike point's corner, coupled body in the other corner
+    auto footer = bounds.reduced (16.0f, 10.0f).removeFromBottom (14.0f);
+    g.setFont (juce::Font (juce::FontOptions (11.0f)));
+    if (bodyName.isNotEmpty())
+    {
+        g.setColour (theme.accent2.withAlpha (0.9f));
+        g.drawText ("+ " + bodyName + " body", footer, juce::Justification::centredRight);
+    }
+    g.setColour (theme.accent.withAlpha (0.9f));
+    g.drawText (juce::String (mp::getExciterInfo (exciter).name).toUpperCase(),
+                bounds.reduced (16.0f, 10.0f).removeFromTop (34.0f).removeFromBottom (14.0f), juce::Justification::centredLeft);
+}
+
+void ObjectView::drawExciter (juce::Graphics& g, juce::Point<float> p)
+{
+    const auto col = theme.accent.withAlpha (0.85f);
+    g.setColour (col);
+    switch (exciter)
+    {
+        case mp::ExciterType::Mallet:
+        {
+            // Mallet shaft and head, resting above the strike point
+            const auto head = p + juce::Point<float> (14.0f, -16.0f);
+            g.drawLine ({ head, head + juce::Point<float> (26.0f, -22.0f) }, 2.5f);
+            g.drawEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre (head), 2.0f);
+            break;
+        }
+        case mp::ExciterType::Bow:
+        {
+            // Bow hair across the contact point, wobbling while it plays
+            const float wobble = 3.0f * energy * std::sin (phase * 0.7f);
+            g.drawLine (p.x - 46.0f, p.y - 10.0f + wobble, p.x + 46.0f, p.y + 10.0f + wobble, 2.0f);
+            g.setColour (col.withAlpha (0.35f));
+            g.drawLine (p.x - 46.0f, p.y - 16.0f + wobble, p.x + 46.0f, p.y + 4.0f + wobble, 4.0f);
+            break;
+        }
+        case mp::ExciterType::Scrape:
+        {
+            juce::Path zig;
+            zig.startNewSubPath (p.x - 30.0f, p.y - 12.0f);
+            for (int i = 1; i <= 8; ++i)
+                zig.lineTo (p.x - 30.0f + 7.5f * (float) i, p.y - 12.0f + ((i & 1) ? -6.0f : 0.0f));
+            g.strokePath (zig, juce::PathStrokeType (1.6f));
+            break;
+        }
+        case mp::ExciterType::Particles:
+        {
+            juce::Random rng (1234 + (int) (phase * 0.3f) * (energy > 0.01f ? 1 : 0));
+            for (int i = 0; i < 14; ++i)
+            {
+                const float a = rng.nextFloat() * 6.2832f, r = 8.0f + rng.nextFloat() * 22.0f;
+                g.fillEllipse (juce::Rectangle<float> (3.0f, 3.0f).withCentre (p + juce::Point<float> (std::cos (a), std::sin (a) - 0.6f) * r));
+            }
+            break;
+        }
+        case mp::ExciterType::Feedback:
+        {
+            juce::Path loop;
+            loop.addCentredArc (p.x, p.y, 20.0f, 20.0f, 0.0f, 0.5f, 5.6f, true);
+            g.strokePath (loop, juce::PathStrokeType (1.8f));
+            const auto tip = p.getPointOnCircumference (20.0f, 5.6f);
+            g.fillEllipse (juce::Rectangle<float> (6.0f, 6.0f).withCentre (tip));
+            break;
+        }
+    }
+}
+
+void ObjectView::drawTube (juce::Graphics& g, const Geometry& geo)
+{
+    const auto r = geo.rect;
+    const float stopped = 1.0f - shape; // how closed the left end is
+
+    g.setGradientFill (juce::ColourGradient (theme.accent2.withAlpha (0.30f + 0.2f * energy), r.getX(), r.getY(),
+                                             theme.accent2.withAlpha (0.06f), r.getX(), r.getBottom(), false));
+    g.fillRoundedRectangle (r, r.getHeight() * 0.18f);
+
+    // Air column standing wave
+    juce::Path wave;
+    const float amp = r.getHeight() * 0.3f * (0.2f + energy);
+    for (int i = 0; i <= 60; ++i)
+    {
+        const float u = (float) i / 60.0f;
+        const float y = r.getCentreY() + amp * std::cos (kPi * u * (stopped > 0.5f ? 0.5f : 1.0f)) * std::sin (phase);
+        if (i == 0) wave.startNewSubPath (r.getX() + u * r.getWidth(), y);
+        else        wave.lineTo (r.getX() + u * r.getWidth(), y);
+    }
+    g.setColour (theme.textDim.withAlpha (0.35f));
+    g.strokePath (wave, juce::PathStrokeType (1.2f));
+
+    g.setColour (theme.accent2.withAlpha (0.85f));
+    g.drawLine (r.getX(), r.getY(), r.getRight(), r.getY(), 2.0f + 1.5f * energy);
+    g.drawLine (r.getX(), r.getBottom(), r.getRight(), r.getBottom(), 2.0f + 1.5f * energy);
+
+    // End cap: solid when stopped, open rim when open
+    g.setColour (theme.accent2.withAlpha (0.25f + 0.65f * stopped));
+    g.fillRect (juce::Rectangle<float> (3.0f + 6.0f * stopped, r.getHeight()).withPosition (r.getX() - 3.0f, r.getY()));
+    g.setColour (theme.accent2.withAlpha (0.7f));
+    g.drawEllipse (juce::Rectangle<float> (10.0f, r.getHeight()).withCentre ({ r.getRight(), r.getCentreY() }), 1.5f);
 }
 
 void ObjectView::drawMarker (juce::Graphics& g, juce::Point<float> p, float alpha, bool solid)
@@ -403,8 +529,15 @@ void ObjectView::drawBell (juce::Graphics& g, const Geometry& geo)
     g.strokePath (bell, juce::PathStrokeType (2.0f + 1.5f * energy));
 }
 
-void ObjectView::drawString (juce::Graphics& g, const Geometry& geo)
+void ObjectView::drawString (juce::Graphics& g, const Geometry& geo, bool wire)
 {
+    if (wire)
+    {
+        // Tuning-peg end and the buzzing bridge of a waveguide wire
+        g.setColour (theme.textDim.withAlpha (0.4f));
+        g.fillRoundedRectangle (juce::Rectangle<float> (14.0f, 30.0f).withCentre ({ geo.x0 - 4.0f, geo.centre.y }), 3.0f);
+    }
+
     constexpr int steps = 80;
     const float y = geo.centre.y;
     const float amp = energy * geo.area.getHeight() * 0.12f * std::sin (phase);
@@ -426,7 +559,8 @@ void ObjectView::drawString (juce::Graphics& g, const Geometry& geo)
         if (i == 0) str.startNewSubPath (p);
         else        str.lineTo (p);
     }
-    g.setColour (theme.accent2.withAlpha (0.9f));
-    g.strokePath (str, juce::PathStrokeType (1.5f + 4.0f * shape, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setColour (wire ? theme.text.withAlpha (0.85f) : theme.accent2.withAlpha (0.9f));
+    const float thickness = wire ? 1.0f + 2.5f * shape : 1.5f + 4.0f * shape;
+    g.strokePath (str, juce::PathStrokeType (thickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
 } // namespace ui

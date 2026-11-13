@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Theme.h"
-#include "dsp/ModeModels.h"
+#include "dsp/VoiceSettings.h"
 
 #include <functional>
 
@@ -18,7 +18,8 @@ public:
     std::function<void (float position)> onStrike;
 
     void setTheme (const Theme& t);
-    void update (mp::Model model, float shape, float position, float energy);
+    void update (mp::Model model, float shape, float position, float energy,
+                 mp::ExciterType exciter, const juce::String& bodyName);
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -46,11 +47,15 @@ private:
     void drawMetal (juce::Graphics&, const Geometry&);
     void drawGlass (juce::Graphics&, const Geometry&);
     void drawBell (juce::Graphics&, const Geometry&);
-    void drawString (juce::Graphics&, const Geometry&);
+    void drawString (juce::Graphics&, const Geometry&, bool wire);
+    void drawTube (juce::Graphics&, const Geometry&);
     void drawMarker (juce::Graphics&, juce::Point<float>, float alpha, bool solid);
+    void drawExciter (juce::Graphics&, juce::Point<float>);
 
     Theme theme;
     mp::Model model = mp::Model::Membrane;
+    mp::ExciterType exciter = mp::ExciterType::Mallet;
+    juce::String bodyName;
     float shape = 0.0f, position = 0.3f, energy = 0.0f, phase = 0.0f;
     float hoverPosition = -1.0f;
 };

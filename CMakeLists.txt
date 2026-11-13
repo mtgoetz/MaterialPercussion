@@ -32,7 +32,9 @@ target_sources(MaterialPercussion PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/dsp/ModeModels.cpp
-    Source/dsp/ModalVoice.cpp
+    Source/dsp/Exciter.cpp
+    Source/dsp/Waveguide.cpp
+    Source/dsp/Voice.cpp
     Source/ui/ObjectView.cpp
     Source/ui/ModeDisplay.cpp)
 

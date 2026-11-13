@@ -2,8 +2,9 @@
 
 namespace
 {
-constexpr int kEditorWidth = 940;
+constexpr int kEditorWidth = 1080;
 constexpr int kEditorHeight = 680;
+constexpr int kKnobRowHeight = 112;
 constexpr int kUiNote = 60;          // C3: plays at exactly the Pitch knob
 constexpr float kUiVelocity = 0.85f;
 } // namespace
@@ -13,17 +14,14 @@ MaterialPercussionEditor::MaterialPercussionEditor (MaterialPercussionProcessor&
 {
     setLookAndFeel (&lnf);
 
-    // Model selector (segmented buttons)
+    // Model and exciter selectors (segmented buttons)
+    juce::StringArray modelNames, exciterNames;
     for (int i = 0; i < mp::kNumModels; ++i)
-    {
-        auto* b = modelButtons.add (new juce::TextButton (mp::getModelInfo ((mp::Model) i).name));
-        int edges = 0;
-        if (i > 0) edges |= juce::Button::ConnectedOnLeft;
-        if (i < mp::kNumModels - 1) edges |= juce::Button::ConnectedOnRight;
-        b->setConnectedEdges (edges);
-        b->onClick = [this, i] { selectModel (i); };
-        addAndMakeVisible (b);
-    }
+        modelNames.add (mp::getModelInfo ((mp::Model) i).name);
+    for (int i = 0; i < mp::kNumExciters; ++i)
+        exciterNames.add (mp::getExciterInfo ((mp::ExciterType) i).name);
+    modelButtons = makeSegmented (modelNames, [this] (int i) { setChoice (ids::model, i); });
+    exciterButtons = makeSegmented (exciterNames, [this] (int i) { setChoice (ids::exciter, i); });
 
     // Theme picker
     const auto& themes = ui::getThemes();
@@ -32,24 +30,47 @@ MaterialPercussionEditor::MaterialPercussionEditor (MaterialPercussionProcessor&
     themeBox.onChange = [this] { applyTheme (themeBox.getSelectedItemIndex()); };
     addAndMakeVisible (themeBox);
 
+    // Body picker (item ids follow the parameter's choice order)
+    bodyBox.addItem ("No body", 1);
+    for (int i = 0; i < mp::kNumModels; ++i)
+        bodyBox.addItem (juce::String (mp::getModelInfo ((mp::Model) i).name) + " body", i + 2);
+    bodyAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, ids::bodyModel, bodyBox);
+    addAndMakeVisible (bodyBox);
+
     // Visualisation
     objectView.onStrike = [this] (float position) { strikeAt (position); };
     addAndMakeVisible (objectView);
     addAndMakeVisible (modeDisplay);
 
-    // Object controls
-    addKnob (objectKnobs, ids::pitch, "Pitch", "Frequency of the lowest mode (MIDI notes transpose from C3)");
-    addKnob (objectKnobs, ids::decay, "Decay", "How long the object rings");
-    addKnob (objectKnobs, ids::damping, "Damping", "How much faster high modes die than low ones");
-    shapeKnob = addKnob (objectKnobs, ids::shape, "Shape", "");
-    addKnob (objectKnobs, ids::position, "Position", "Where it is hit: centre (dull) to edge (bright, more modes)");
+    // Object
+    addKnob (objectSection, ids::pitch, "Pitch", "Frequency of the lowest mode (MIDI notes transpose from C3)");
+    addKnob (objectSection, ids::decay, "Decay", "How long the object rings");
+    addKnob (objectSection, ids::damping, "Damping", "How much faster high modes die than low ones");
+    shapeKnob = addKnob (objectSection, ids::shape, "Shape", "");
+    addKnob (objectSection, ids::position, "Position", "Where it is hit: centre (dull) to edge (bright, more modes)");
 
-    // Strike controls
-    addKnob (strikeKnobs, ids::hardness, "Hardness", "Mallet: soft felt to hard stick - sets which modes get excited");
-    addKnob (strikeKnobs, ids::noise, "Noise", "Adds a noisy scrape or brush to the strike");
-    addKnob (strikeKnobs, ids::drop, "Pitch Drop", "Pitch jumps up on impact and settles, like a tight drum head");
-    addKnob (strikeKnobs, ids::width, "Width", "Spreads the upper modes across the stereo field");
-    addKnob (strikeKnobs, ids::gain, "Output", "Output level");
+    // Exciter
+    hardnessKnob = addKnob (exciterSection, ids::hardness, "Hardness", "");
+    colorKnob = addKnob (exciterSection, ids::color, "Colour", "");
+    lengthKnob = addKnob (exciterSection, ids::length, "Length", "How long it keeps bowing / scraping / shaking / feeding back (or hold the key)");
+    bounceKnob = addKnob (exciterSection, ids::bounce, "Bounce", "Mallet bounces: one clean hit (left) to a dropped stick rattling to rest");
+    addKnob (exciterSection, ids::noise, "Noise", "Adds noise to the excitation: a scrape on the strike, breath on the bow");
+
+    // Nonlinear
+    addKnob (nonlinearSection, ids::drop, "Pitch Drop", "Pitch jumps up on impact and settles, like a tight drum head");
+    addKnob (nonlinearSection, ids::tension, "Tension", "Loud = stiff: pitch bends down as it decays and energy blooms into high modes (gong crash)");
+    addKnob (nonlinearSection, ids::rattle, "Rattle", "A loose part buzzing against the object: snare wires, sizzle rivets, a sitar bridge");
+    addKnob (nonlinearSection, ids::gap, "Gap", "How far it must move before it buzzes: small = constant buzz, large = only on hard hits");
+
+    // Body
+    addKnob (bodySection, ids::bodyTune, "Tune", "Body pitch relative to the object");
+    addKnob (bodySection, ids::bodyDecay, "Decay", "How long the body rings");
+    addKnob (bodySection, ids::bodyBlend, "Blend", "What gets hit: the object (left), the body (right), or both - a morph between them");
+    addKnob (bodySection, ids::bodyCouple, "Couple", "How tightly the two are joined: sympathetic ringing, beating, energy trading");
+
+    // Output
+    addKnob (outputSection, ids::width, "Width", "Spreads the upper modes across the stereo field");
+    addKnob (outputSection, ids::gain, "Output", "Output level");
 
     keyTrackAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, ids::keyTrack, keyTrackButton);
     addAndMakeVisible (keyTrackButton);
@@ -70,9 +91,26 @@ MaterialPercussionEditor::~MaterialPercussionEditor()
     setLookAndFeel (nullptr);
 }
 
-ui::Knob* MaterialPercussionEditor::addKnob (juce::OwnedArray<ui::Knob>& row, const char* paramId, const char* name, const char* hint)
+juce::OwnedArray<juce::TextButton> MaterialPercussionEditor::makeSegmented (const juce::StringArray& names, std::function<void (int)> onPick)
 {
-    auto* k = row.add (new ui::Knob (proc.apvts, paramId, name, hint));
+    juce::OwnedArray<juce::TextButton> buttons;
+    for (int i = 0; i < names.size(); ++i)
+    {
+        auto* b = buttons.add (new juce::TextButton (names[i]));
+        int edges = 0;
+        if (i > 0) edges |= juce::Button::ConnectedOnLeft;
+        if (i < names.size() - 1) edges |= juce::Button::ConnectedOnRight;
+        b->setConnectedEdges (edges);
+        b->onClick = [onPick, i] { onPick (i); };
+        addAndMakeVisible (b);
+    }
+    return buttons;
+}
+
+ui::Knob* MaterialPercussionEditor::addKnob (Section& section, const char* paramId, const char* name, const char* hint)
+{
+    auto* k = knobs.add (new ui::Knob (proc.apvts, paramId, name, hint));
+    section.knobs.push_back (k);
     addAndMakeVisible (k);
     return k;
 }
@@ -93,9 +131,9 @@ void MaterialPercussionEditor::applyTheme (int index)
     repaint();
 }
 
-void MaterialPercussionEditor::selectModel (int index)
+void MaterialPercussionEditor::setChoice (const char* paramId, int index)
 {
-    if (auto* param = proc.apvts.getParameter (ids::model))
+    if (auto* param = proc.apvts.getParameter (paramId))
     {
         param->beginChangeGesture();
         param->setValueNotifyingHost (param->convertTo0to1 ((float) index));
@@ -117,21 +155,34 @@ void MaterialPercussionEditor::strikeAt (float position)
 
 juce::String MaterialPercussionEditor::currentHint() const
 {
-    const auto& info = mp::getModelInfo (displayParams.model);
+    const auto& model = mp::getModelInfo (displayParams.model);
+    const auto exciterType = (mp::ExciterType) juce::roundToInt (proc.apvts.getRawParameterValue (ids::exciter)->load());
+    const auto& exciter = mp::getExciterInfo (exciterType);
 
-    for (auto* row : { &objectKnobs, &strikeKnobs })
-        for (auto* k : *row)
-            if (k->isHovered())
-                return k->getLabel() + ":  " + (k == shapeKnob ? juce::String (info.shapeHint) : k->hint);
+    for (auto* k : knobs)
+        if (k->isVisible() && k->isHovered())
+        {
+            if (k == shapeKnob)    return k->getLabel() + ":  " + model.shapeHint;
+            if (k == hardnessKnob) return k->getLabel() + ":  " + exciter.amountHint;
+            if (k == colorKnob)    return exciter.colorHint;
+            return k->getLabel() + ":  " + k->hint;
+        }
 
     for (int i = 0; i < modelButtons.size(); ++i)
         if (modelButtons[i]->isMouseOver())
             return juce::String (mp::getModelInfo ((mp::Model) i).name) + ":  " + mp::getModelInfo ((mp::Model) i).blurb;
 
+    for (int i = 0; i < exciterButtons.size(); ++i)
+        if (exciterButtons[i]->isMouseOver())
+            return juce::String (mp::getExciterInfo ((mp::ExciterType) i).name) + ":  " + mp::getExciterInfo ((mp::ExciterType) i).blurb;
+
+    if (bodyBox.isMouseOver (true))
+        return "Body:  a second resonator joined to the object - a drum shell, a soundboard, or something impossible";
+
     if (keyTrackButton.isMouseOver())
         return "Key track:  MIDI notes change the pitch (off = every note plays the same pitch)";
 
-    return juce::String (info.blurb);
+    return juce::String (model.blurb);
 }
 
 //==============================================================================
@@ -142,8 +193,17 @@ void MaterialPercussionEditor::timerCallback()
     {
         mp::computeModes (params, displayModes);
         displayParams = params;
-        haveDisplayModes = true;
     }
+
+    mp::ModeParams bodyParams;
+    const bool bodyOn = proc.getBodyParams (bodyParams);
+    if (! haveDisplayModes || bodyOn != displayBodyOn || ! (bodyParams == displayBodyParams))
+    {
+        mp::computeModes (bodyParams, displayBodyModes);
+        displayBodyParams = bodyParams;
+        displayBodyOn = bodyOn;
+    }
+    haveDisplayModes = true;
 
     float energy = 0.0f;
     for (size_t i = 0; i < shownLevels.size(); ++i)
@@ -154,19 +214,46 @@ void MaterialPercussionEditor::timerCallback()
             shownLevels[i] = 0.0f;
         energy = std::max (energy, shownLevels[i]);
     }
+    for (size_t i = 0; i < shownBodyLevels.size(); ++i)
+    {
+        const float live = proc.bodyLevels[i].exchange (0.0f, std::memory_order_relaxed);
+        shownBodyLevels[i] = std::max (live, shownBodyLevels[i] * 0.82f);
+        if (shownBodyLevels[i] < 1.0e-4f)
+            shownBodyLevels[i] = 0.0f;
+    }
 
-    const float pitch = proc.apvts.getRawParameterValue (ids::pitch)->load();
-    const float hardness = proc.apvts.getRawParameterValue (ids::hardness)->load();
+    const auto settings = proc.readVoiceSettings();
+    const auto& exciter = mp::getExciterInfo (settings.exciter);
 
+    ui::ModeDisplay::State state;
+    state.modes = &displayModes;
+    state.baseHz = settings.pitchHz;
+    state.bodyModes = bodyOn ? &displayBodyModes : nullptr;
+    state.bodyHz = settings.pitchHz * std::exp2 (settings.bodyTune / 12.0f);
+    state.exciter = settings.exciter;
+    state.hardness = settings.hardness;
+    state.color = settings.color;
+    state.liveLevels = shownLevels.data();
+    state.bodyLevels = shownBodyLevels.data();
     modeDisplay.setHint (currentHint());
-    modeDisplay.update (displayModes, pitch, hardness, shownLevels.data());
-    objectView.update (params.model, params.shape, params.position, juce::jlimit (0.0f, 1.0f, energy * 2.0f));
+    modeDisplay.update (state);
 
-    const int modelIndex = (int) params.model;
+    objectView.update (params.model, params.shape, params.position, juce::jlimit (0.0f, 1.0f, energy * 2.0f), settings.exciter,
+                       bodyOn ? juce::String (mp::getModelInfo (bodyParams.model).name) : juce::String());
+
     for (int i = 0; i < modelButtons.size(); ++i)
-        modelButtons[i]->setToggleState (i == modelIndex, juce::dontSendNotification);
+        modelButtons[i]->setToggleState (i == (int) params.model, juce::dontSendNotification);
+    for (int i = 0; i < exciterButtons.size(); ++i)
+        exciterButtons[i]->setToggleState (i == (int) settings.exciter, juce::dontSendNotification);
 
+    // Knobs whose meaning depends on the model / exciter
     shapeKnob->setLabel (mp::getModelInfo (params.model).shapeName);
+    hardnessKnob->setLabel (exciter.amountName);
+    lengthKnob->setVisible (exciter.continuous);
+    bounceKnob->setVisible (! exciter.continuous);
+    colorKnob->setAlpha (settings.exciter == mp::ExciterType::Mallet ? 0.4f : 1.0f);
+    for (auto* k : bodySection.knobs)
+        k->setAlpha (bodyOn ? 1.0f : 0.4f);
 }
 
 //==============================================================================
@@ -180,55 +267,89 @@ void MaterialPercussionEditor::paint (juce::Graphics& g)
     g.setFont (juce::Font (juce::FontOptions (20.0f)).boldened());
     g.setColour (t.accent);
     g.drawText ("MATERIAL", title, juce::Justification::centredLeft);
-    const float offset = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), "MATERIAL ") ;
+    const float offset = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), "MATERIAL ");
     g.setColour (t.text);
     g.drawText ("PERCUSSION", title.withTrimmedLeft (offset), juce::Justification::centredLeft);
 
     // Section headers
-    auto drawSection = [&] (juce::Rectangle<int> area, const juce::String& name)
+    for (auto* s : { &objectSection, &exciterSection, &nonlinearSection, &bodySection, &outputSection })
     {
         g.setColour (t.textDim);
         g.setFont (juce::Font (juce::FontOptions (12.0f)).boldened());
-        g.drawText (name, area, juce::Justification::centredLeft);
+        g.drawText (s->title, s->header, juce::Justification::centredLeft);
+        const float textW = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), s->title) + 10.0f;
         g.setColour (t.panelEdge);
-        g.drawHorizontalLine (area.getCentreY(), (float) area.getX() + 70.0f, (float) area.getRight() - 120.0f);
-    };
-    drawSection (objectHeader, "OBJECT");
-    drawSection (strikeHeader, "STRIKE");
+        g.drawHorizontalLine (s->header.getCentreY(), (float) s->header.getX() + textW,
+                              (float) (s->header.getRight() - s->headerReserve - 8));
+    }
+}
+
+void MaterialPercussionEditor::layoutSection (Section& section, juce::Rectangle<int> area)
+{
+    section.header = area.removeFromTop (24).withTrimmedRight (12);
+    auto row = area.removeFromTop (kKnobRowHeight).withTrimmedRight (12);
+
+    // Length and Bounce share a slot: only one of them is visible at a time.
+    std::vector<ui::Knob*> slots;
+    for (auto* k : section.knobs)
+        if (k != bounceKnob)
+            slots.push_back (k);
+
+    const int w = row.getWidth() / (int) slots.size();
+    for (auto* k : slots)
+    {
+        const auto cell = row.removeFromLeft (w).reduced (6, 0);
+        k->setBounds (cell);
+        if (k == lengthKnob)
+            bounceKnob->setBounds (cell);
+    }
 }
 
 void MaterialPercussionEditor::resized()
 {
     auto b = getLocalBounds().reduced (16);
 
+    // Header: title, model buttons, theme
     headerArea = b.removeFromTop (40);
     auto header = headerArea;
-    themeBox.setBounds (header.removeFromRight (130).withSizeKeepingCentre (130, 28));
+    themeBox.setBounds (header.removeFromRight (120).withSizeKeepingCentre (120, 28));
     header.removeFromLeft (240);
-    auto buttons = header.withSizeKeepingCentre (juce::jmin (header.getWidth() - 20, mp::kNumModels * 86), 30);
+    auto buttons = header.withSizeKeepingCentre (juce::jmin (header.getWidth() - 20, mp::kNumModels * 80), 30);
     const int buttonWidth = buttons.getWidth() / mp::kNumModels;
     for (auto* button : modelButtons)
         button->setBounds (buttons.removeFromLeft (buttonWidth));
 
     b.removeFromTop (10);
-    auto views = b.removeFromTop (300);
-    objectView.setBounds (views.removeFromLeft (320));
+    auto views = b.removeFromTop (290);
+    objectView.setBounds (views.removeFromLeft (340));
     views.removeFromLeft (10);
     modeDisplay.setBounds (views);
+    b.removeFromTop (12);
 
-    auto layoutRow = [] (juce::Rectangle<int> area, juce::OwnedArray<ui::Knob>& row)
-    {
-        const int w = area.getWidth() / row.size();
-        for (auto* k : row)
-            k->setBounds (area.removeFromLeft (w).reduced (10, 0));
-    };
+    // Row 1: object (5 knobs) | exciter (4 knobs + selector)
+    auto row1 = b.removeFromTop (24 + kKnobRowHeight);
+    const int unit1 = row1.getWidth() / 9;
+    layoutSection (objectSection, row1.removeFromLeft (unit1 * 5));
+    layoutSection (exciterSection, row1);
 
-    b.removeFromTop (10);
-    objectHeader = b.removeFromTop (22);
-    keyTrackButton.setBounds (objectHeader.withLeft (objectHeader.getRight() - 110));
-    layoutRow (b.removeFromTop (118), objectKnobs);
+    objectSection.headerReserve = 100;
+    keyTrackButton.setBounds (objectSection.header.withLeft (objectSection.header.getRight() - 100));
 
-    b.removeFromTop (6);
-    strikeHeader = b.removeFromTop (22);
-    layoutRow (b.removeFromTop (118), strikeKnobs);
+    exciterSection.headerReserve = juce::jmin (exciterSection.header.getWidth() - 80, 5 * 70);
+    auto exButtons = exciterSection.header.withLeft (exciterSection.header.getRight() - exciterSection.headerReserve).reduced (0, 1);
+    const int exWidth = exButtons.getWidth() / mp::kNumExciters;
+    for (auto* button : exciterButtons)
+        button->setBounds (exButtons.removeFromLeft (exWidth));
+
+    b.removeFromTop (8);
+
+    // Row 2: nonlinear (4) | body (4 + picker) | output (2)
+    auto row2 = b.removeFromTop (24 + kKnobRowHeight);
+    const int unit2 = row2.getWidth() / 10;
+    layoutSection (nonlinearSection, row2.removeFromLeft (unit2 * 4));
+    layoutSection (bodySection, row2.removeFromLeft (unit2 * 4));
+    layoutSection (outputSection, row2);
+
+    bodySection.headerReserve = 150;
+    bodyBox.setBounds (bodySection.header.withLeft (bodySection.header.getRight() - 150).reduced (0, 1));
 }

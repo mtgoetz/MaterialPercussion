@@ -18,31 +18,50 @@ public:
     void resized() override;
 
 private:
+    struct Section
+    {
+        juce::String title;
+        std::vector<ui::Knob*> knobs;
+        juce::Rectangle<int> header;
+        int headerReserve = 0; // pixels at the right of the header taken by controls
+    };
+
     void timerCallback() override;
     void applyTheme (int index);
-    void selectModel (int index);
+    void setChoice (const char* paramId, int index);
     void strikeAt (float position);
     juce::String currentHint() const;
-    ui::Knob* addKnob (juce::OwnedArray<ui::Knob>& row, const char* paramId, const char* name, const char* hint);
+    ui::Knob* addKnob (Section& section, const char* paramId, const char* name, const char* hint);
+    void layoutSection (Section& section, juce::Rectangle<int> area);
+    juce::OwnedArray<juce::TextButton> makeSegmented (const juce::StringArray& names, std::function<void (int)> onPick);
 
     MaterialPercussionProcessor& proc;
     ui::MPLookAndFeel lnf; // declared before the components so it outlives them
 
-    juce::OwnedArray<juce::TextButton> modelButtons;
-    juce::ComboBox themeBox;
+    juce::OwnedArray<juce::TextButton> modelButtons, exciterButtons;
+    juce::ComboBox themeBox, bodyBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bodyAttachment;
     ui::ObjectView objectView;
     ui::ModeDisplay modeDisplay;
-    juce::OwnedArray<ui::Knob> objectKnobs, strikeKnobs;
-    ui::Knob* shapeKnob = nullptr;
     juce::ToggleButton keyTrackButton { "Key track" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> keyTrackAttachment;
 
-    juce::Rectangle<int> headerArea, objectHeader, strikeHeader;
+    juce::OwnedArray<ui::Knob> knobs;
+    Section objectSection { "OBJECT" }, exciterSection { "EXCITER" }, nonlinearSection { "NONLINEAR" },
+            bodySection { "BODY" }, outputSection { "OUTPUT" };
+    ui::Knob* shapeKnob = nullptr;
+    ui::Knob* hardnessKnob = nullptr;
+    ui::Knob* colorKnob = nullptr;
+    ui::Knob* lengthKnob = nullptr;
+    ui::Knob* bounceKnob = nullptr;
 
-    mp::ModeSet displayModes;
-    mp::ModeParams displayParams;
-    bool haveDisplayModes = false;
+    juce::Rectangle<int> headerArea;
+
+    mp::ModeSet displayModes, displayBodyModes;
+    mp::ModeParams displayParams, displayBodyParams;
+    bool displayBodyOn = false, haveDisplayModes = false;
     std::array<float, mp::kMaxModes> shownLevels {};
+    std::array<float, mp::Voice::kBodyModes> shownBodyLevels {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MaterialPercussionEditor)
 };

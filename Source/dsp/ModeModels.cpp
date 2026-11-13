@@ -17,6 +17,9 @@ const ModelInfo kModelInfos[kNumModels] = {
     { "Glass",    "A glass bowl or wine glass: pure tones that beat",        "Thickness", "Thin wine glass (left) to thick bowl (right)",        1.8f,  0.1f, 1.0f, 0.6f },
     { "Bell",     "A cast bell: rich, slightly dissonant partials",          "Profile",   "Minor-third bell (left) to major-third bell",         2.0f,  0.3f, 1.2f, 0.6f },
     { "String",   "A struck string: piano, dulcimer, wire",                  "Stiffness", "Flexible string (left) to stiff wire (right)",        1.2f,  0.2f, 1.4f, 0.8f },
+    { "Tube",     "A waveguide pipe: slap tubes, boomwhackers, blown pipes", "Bore",      "Stopped pipe, odd harmonics (left) to open pipe",     1.0f,  0.3f, 1.6f, 0.9f },
+    { "Wire",     "A waveguide string: twangy, bends with Tension, buzzes with Rattle",
+                                                                             "Stiffness", "Slack gut string (left) to stiff steel wire (right)", 1.4f,  0.3f, 1.5f, 0.9f },
 };
 
 //==============================================================================
@@ -302,6 +305,40 @@ void computeString (const ModeParams& p, ModeSet& out) noexcept
     out.count = kMaxModes;
 }
 
+// Waveguide models: the harmonic series their delay loops produce. Used for the display,
+// for the Body resonator and to shape the per-mode meters.
+void computeTube (const ModeParams& p, ModeSet& out) noexcept
+{
+    const auto decay = makeDecay (p);
+    const double open = p.shape;
+    const double x = tubeX (p.position);
+    int i = 0;
+    for (int n = 1; n <= kMaxModes && i < kMaxModes; ++n)
+    {
+        // Stopped pipes only have odd harmonics; open pipes have all of them.
+        const double weight = (n % 2 == 1) ? std::sqrt (1.0 - open) + std::sqrt (open) : std::sqrt (open);
+        if (weight < 1.0e-3)
+            continue;
+        setMode (out, i++, (double) n, weight * std::sin (n * kPi * x) / n, decay ((double) n));
+    }
+    out.count = i;
+}
+
+void computeWire (const ModeParams& p, ModeSet& out) noexcept
+{
+    const auto decay = makeDecay (p);
+    const double b = 0.0012 * p.shape * p.shape; // roughly what the dispersion filters give
+    const double norm = std::sqrt (1.0 + b);
+    const double x = wireX (p.position);
+    for (int k = 0; k < kMaxModes; ++k)
+    {
+        const double n = k + 1.0;
+        const double ratio = n * std::sqrt (1.0 + b * n * n) / norm;
+        setMode (out, k, ratio, std::sin (n * kPi * x) / n, decay (ratio));
+    }
+    out.count = kMaxModes;
+}
+
 void normalise (ModeSet& out) noexcept
 {
     double sumSq = 0.0;
@@ -323,6 +360,11 @@ const ModelInfo& getModelInfo (Model model) noexcept
     return kModelInfos[std::clamp ((int) model, 0, kNumModels - 1)];
 }
 
+float modeDecaySeconds (const ModeParams& params, double ratio) noexcept
+{
+    return makeDecay (params) (ratio);
+}
+
 void initModeTables()
 {
     (void) membraneTable();
@@ -342,6 +384,8 @@ void computeModes (const ModeParams& params, ModeSet& out) noexcept
         case Model::Glass:    computeGlass (params, out);    break;
         case Model::Bell:     computeBell (params, out);     break;
         case Model::String:   computeString (params, out);   break;
+        case Model::Tube:     computeTube (params, out);     break;
+        case Model::Wire:     computeWire (params, out);     break;
     }
     normalise (out);
 }

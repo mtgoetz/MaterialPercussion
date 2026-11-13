@@ -30,13 +30,25 @@ void ModeDisplay::setHint (const juce::String& text)
     }
 }
 
-void ModeDisplay::update (const mp::ModeSet& newModes, float newBaseHz, float newHardness, const float* liveLevels)
+void ModeDisplay::update (const State& s)
 {
-    modes = newModes;
-    baseHz = newBaseHz;
-    hardness = newHardness;
-    std::copy (liveLevels, liveLevels + mp::kMaxModes, levels.begin());
+    modes = *s.modes;
+    baseHz = s.baseHz;
+    hasBody = s.bodyModes != nullptr;
+    if (hasBody)
+        bodyModes = *s.bodyModes;
+    bodyHz = s.bodyHz;
+    exciter = s.exciter;
+    hardness = s.hardness;
+    color = s.color;
+    std::copy (s.liveLevels, s.liveLevels + mp::kMaxModes, levels.begin());
+    std::copy (s.bodyLevels, s.bodyLevels + kMaxBodyModes, bodyLevels.begin());
     repaint();
+}
+
+float ModeDisplay::exciterResponse (float hz) const
+{
+    return mp::exciterSpectrum (exciter, hz, hardness, color);
 }
 
 void ModeDisplay::paint (juce::Graphics& g)
@@ -62,9 +74,11 @@ void ModeDisplay::paint (juce::Graphics& g)
     auto legend = area.removeFromBottom (14.0f);
     g.setColour (theme.textDim);
     g.setFont (juce::Font (juce::FontOptions (11.0f)));
-    g.drawText ("bar = loudness per hit   dot = ring time   glow = ringing now", legend, juce::Justification::centredLeft);
+    g.drawText (hasBody ? "bar = loudness per hit   dot = ring time   glow = ringing now   diamond = body"
+                        : "bar = loudness per hit   dot = ring time   glow = ringing now",
+                legend, juce::Justification::centredLeft);
     g.setColour (theme.accent2.withAlpha (0.6f));
-    g.drawText ("mallet spectrum", legend, juce::Justification::centredRight);
+    g.drawText (juce::String (mp::getExciterInfo (exciter).name).toLowerCase() + " spectrum", legend, juce::Justification::centredRight);
 
     const auto plot = area.reduced (4.0f, 8.0f);
     const float logSpan = std::log (kMaxHz / kMinHz);
@@ -88,14 +102,13 @@ void ModeDisplay::paint (juce::Graphics& g)
         g.drawHorizontalLine (juce::roundToInt (yForDb (db)), plot.getX(), plot.getRight());
     }
 
-    // Mallet spectrum
-    const float width = mp::strikeWidthSeconds (hardness);
+    // Exciter spectrum
     juce::Path curve;
     curve.startNewSubPath (plot.getX(), plot.getBottom());
     for (float px = 0.0f; px <= plot.getWidth(); px += 2.0f)
     {
         const float hz = kMinHz * std::exp (logSpan * px / plot.getWidth());
-        const float db = juce::Decibels::gainToDecibels (mp::strikeSpectrum (hz, width), -80.0f);
+        const float db = juce::Decibels::gainToDecibels (exciterResponse (hz), -80.0f);
         curve.lineTo (plot.getX() + px, yForDb (db));
     }
     curve.lineTo (plot.getRight(), plot.getBottom());
@@ -114,7 +127,7 @@ void ModeDisplay::paint (juce::Graphics& g)
             continue;
 
         const float x = xFor (hz);
-        const float db = juce::Decibels::gainToDecibels (std::abs (m.amp) * mp::strikeSpectrum (hz, width), -80.0f);
+        const float db = juce::Decibels::gainToDecibels (std::abs (m.amp) * exciterResponse (hz), -80.0f);
         const float top = yForDb (db);
         const float ring = juce::jlimit (0.0f, 1.0f, std::log (m.t60 / 0.02f) / std::log (1000.0f)); // 20 ms .. 20 s
 
@@ -136,6 +149,41 @@ void ModeDisplay::paint (juce::Graphics& g)
             g.fillRect (juce::Rectangle<float> (x - 4.5f, ly, 9.0f, plot.getBottom() - ly));
             g.setColour (theme.accent2.withAlpha (0.95f));
             g.fillRect (juce::Rectangle<float> (x - 1.5f, ly, 3.0f, plot.getBottom() - ly));
+        }
+    }
+
+    // Body modes: diamonds (bigger = longer ring), glowing when they ring
+    if (hasBody)
+    {
+        for (int i = 0; i < std::min (bodyModes.count, kMaxBodyModes); ++i)
+        {
+            const auto& m = bodyModes.modes[(size_t) i];
+            const float hz = bodyHz * m.ratio;
+            if (hz < kMinHz || hz > kMaxHz || m.amp == 0.0f)
+                continue;
+
+            const float x = xFor (hz);
+            const float db = juce::Decibels::gainToDecibels (std::abs (m.amp), -80.0f) - 6.0f;
+            if (db <= kFloorDb)
+                continue;
+            const float y = yForDb (db);
+            const float ring = juce::jlimit (0.0f, 1.0f, std::log (m.t60 / 0.02f) / std::log (1000.0f));
+            const float r = 2.5f + 3.0f * ring;
+            const float live = bodyLevels[(size_t) i];
+
+            juce::Path diamond;
+            diamond.addQuadrilateral (x, y - r, x + r, y, x, y + r, x - r, y);
+            g.setColour (theme.text.withAlpha (0.25f + 0.35f * ring));
+            g.strokePath (diamond, juce::PathStrokeType (1.2f));
+            g.drawVerticalLine (juce::roundToInt (x), y + r, plot.getBottom());
+
+            if (live > 1.0e-3f)
+            {
+                const float ly = yForDb (juce::Decibels::gainToDecibels (live));
+                g.setColour (theme.text.withAlpha (0.55f));
+                g.fillRect (juce::Rectangle<float> (x - 1.0f, ly, 2.0f, plot.getBottom() - ly));
+                g.fillPath (diamond);
+            }
         }
     }
 }
