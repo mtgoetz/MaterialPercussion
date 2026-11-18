@@ -78,6 +78,7 @@ void Voice::strike (int newNote, float velocity, const RenderContext& ctx) noexc
     active = true;
     lastVersion = lastBodyVersion = -1; // force a coefficient refresh
 
+    exciter.setSample (ctx.sample);
     exciter.trigger (velocity, ctx.settings);
     dropEnv = std::min (1.0, dropEnv + std::clamp ((double) velocity, 0.0, 1.0));
 }
@@ -114,6 +115,7 @@ void Voice::render (float* left, float* right, int numSamples, const RenderConte
     }
 
     exciter.update (s);
+    exciter.setSample (ctx.sample);
     const double blend = bodyOn ? s.bodyBlend : 0.0;
     const double couple = bodyOn ? s.bodyCouple : 0.0;
     const double gap = rattleGap (s.gap);
@@ -221,8 +223,9 @@ void Voice::render (float* left, float* right, int numSamples, const RenderConte
             else
                 modal.tick ((1.0 - blend) * e, contactForce, l, r);
 
-            const float outL = (float) ((l * s.gain + bodyL * s.bodyGain) + rattleOut);
-            const float outR = (float) ((r * s.gain + bodyR * s.bodyGain) + rattleOut);
+            const double direct = exciter.getDirect(); // recorded attack, heard as is
+            const float outL = (float) (((l + direct) * s.gain + bodyL * s.bodyGain) + rattleOut);
+            const float outR = (float) (((r + direct) * s.gain + bodyR * s.bodyGain) + rattleOut);
             left[start + k] += outL;
             right[start + k] += outR;
             const float a = std::max (std::abs (outL), std::abs (outR));

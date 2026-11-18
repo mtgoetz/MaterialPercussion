@@ -20,6 +20,9 @@ const ModelInfo kModelInfos[kNumModels] = {
     { "Tube",     "A waveguide pipe: slap tubes, boomwhackers, blown pipes", "Bore",      "Stopped pipe, odd harmonics (left) to open pipe",     1.0f,  0.3f, 1.6f, 0.9f },
     { "Wire",     "A waveguide string: twangy, bends with Tension, buzzes with Rattle",
                                                                              "Stiffness", "Slack gut string (left) to stiff steel wire (right)", 1.4f,  0.3f, 1.5f, 0.9f },
+    { "Captured", "A recorded object: its modes measured from a sound file you dropped in",
+                                                                             "Stretch",   "Partials squeezed together (left), as recorded (middle), spread apart (right)",
+                                                                                                                                                 1.0f,  0.0f, 1.0f, 0.6f },
 };
 
 //==============================================================================
@@ -140,7 +143,7 @@ void computeMembrane (const ModeParams& p, ModeSet& out) noexcept
     const double r = membraneRadius (p.position);
     const double s = p.shape;
 
-    for (int i = 0; i < kMaxModes; ++i)
+    for (int i = 0; i < kModelModes; ++i)
     {
         const auto& mode = t.modes[(size_t) i];
 
@@ -163,7 +166,7 @@ void computeMembrane (const ModeParams& p, ModeSet& out) noexcept
         }
         setMode (out, i, ratio, amp, std::max (0.01f, t60));
     }
-    out.count = kMaxModes;
+    out.count = kModelModes;
 }
 
 // Free-free Euler-Bernoulli beam mode shape, written in a form that stays
@@ -221,7 +224,7 @@ void computeMetal (const ModeParams& p, ModeSet& out) noexcept
         for (int n = 1; n <= grid; ++n)
             candidates[(size_t) ((m - 1) * grid + (n - 1))] = { (m / a) * (m / a) + (double) (n * n), m, n };
 
-    std::partial_sort (candidates.begin(), candidates.begin() + kMaxModes, candidates.end(),
+    std::partial_sort (candidates.begin(), candidates.begin() + kModelModes, candidates.end(),
                        [] (const Candidate& l, const Candidate& r) { return l.f < r.f; });
 
     const auto decay = makeDecay (p);
@@ -229,14 +232,14 @@ void computeMetal (const ModeParams& p, ModeSet& out) noexcept
     const double x = plateX (p.position);
     const double y = plateY (p.position);
 
-    for (int i = 0; i < kMaxModes; ++i)
+    for (int i = 0; i < kModelModes; ++i)
     {
         const auto& c = candidates[(size_t) i];
         const double ratio = c.f / f11;
         const double amp = std::sin (c.m * kPi * x) * std::sin (c.n * kPi * y) * std::pow (ratio, -0.3);
         setMode (out, i, ratio, amp, decay (ratio));
     }
-    out.count = kMaxModes;
+    out.count = kModelModes;
 }
 
 void computeGlass (const ModeParams& p, ModeSet& out) noexcept
@@ -249,7 +252,7 @@ void computeGlass (const ModeParams& p, ModeSet& out) noexcept
     const double split = 0.002 + 0.006 * (1.0 - p.shape);
 
     int i = 0;
-    for (int order = 2; i + 1 < kMaxModes; ++order)
+    for (int order = 2; i + 1 < kModelModes; ++order)
     {
         const double ratio = std::pow (ringFreq (order) / f2, stretch);
         const double tilt = std::pow (ratio, -1.1 + 0.9 * p.position);   // low on the bowl = dark, rim = bright
@@ -295,14 +298,14 @@ void computeString (const ModeParams& p, ModeSet& out) noexcept
     const double norm = std::sqrt (1.0 + b);
     const double x = stringX (p.position);
 
-    for (int k = 0; k < kMaxModes; ++k)
+    for (int k = 0; k < kModelModes; ++k)
     {
         const double n = k + 1.0;
         const double ratio = n * std::sqrt (1.0 + b * n * n) / norm;
         const double amp = std::sin (n * kPi * x) / std::pow (n, 0.8);
         setMode (out, k, ratio, amp, decay (ratio));
     }
-    out.count = kMaxModes;
+    out.count = kModelModes;
 }
 
 // Waveguide models: the harmonic series their delay loops produce. Used for the display,
@@ -313,7 +316,7 @@ void computeTube (const ModeParams& p, ModeSet& out) noexcept
     const double open = p.shape;
     const double x = tubeX (p.position);
     int i = 0;
-    for (int n = 1; n <= kMaxModes && i < kMaxModes; ++n)
+    for (int n = 1; n <= kModelModes && i < kModelModes; ++n)
     {
         // Stopped pipes only have odd harmonics; open pipes have all of them.
         const double weight = (n % 2 == 1) ? std::sqrt (1.0 - open) + std::sqrt (open) : std::sqrt (open);
@@ -330,13 +333,46 @@ void computeWire (const ModeParams& p, ModeSet& out) noexcept
     const double b = 0.0012 * p.shape * p.shape; // roughly what the dispersion filters give
     const double norm = std::sqrt (1.0 + b);
     const double x = wireX (p.position);
-    for (int k = 0; k < kMaxModes; ++k)
+    for (int k = 0; k < kModelModes; ++k)
     {
         const double n = k + 1.0;
         const double ratio = n * std::sqrt (1.0 + b * n * n) / norm;
         setMode (out, k, ratio, std::sin (n * kPi * x) / n, decay (ratio));
     }
-    out.count = kMaxModes;
+    out.count = kModelModes;
+}
+
+// Captured: the measured modes, bent by the knobs. Each knob is neutral (plays the recording
+// back as measured) at the setting a fresh capture puts it to: Shape 50%, Position 50%,
+// Decay 1 s, Damping 50%.
+void computeCaptured (const ModeParams& p, ModeSet& out) noexcept
+{
+    if (p.capture == nullptr || p.capture->modes.empty())
+    {
+        // Nothing loaded yet: a plain drum head, so the voice never runs without modes.
+        ModeParams placeholder = p;
+        placeholder.model = Model::Membrane;
+        placeholder.shape = 0.3f;
+        computeMembrane (placeholder, out);
+        return;
+    }
+
+    const double stretch = std::exp2 ((p.shape - 0.5) * 1.2);   // partial-spacing exponent
+    const double tilt = (p.position - 0.5) * 1.2;               // dull centre .. bright edge
+    const double dampExp = (p.damping - 0.5) * 1.5;             // high modes die faster / slower
+    const double decayMul = std::max (0.01f, p.decay);
+    const double ref = std::max (1.0f, p.capture->refHz);
+
+    int i = 0;
+    for (const auto& m : p.capture->modes)
+    {
+        if (i >= kMaxModes)
+            break;
+        const double r0 = std::max (1.0e-3, m.hz / ref);
+        const double t60 = std::clamp (m.t60 * decayMul * std::pow (r0, -dampExp), 0.01, 60.0);
+        setMode (out, i++, std::pow (r0, stretch), m.amp * std::pow (r0, tilt), (float) t60);
+    }
+    out.count = i;
 }
 
 void normalise (ModeSet& out) noexcept
@@ -386,6 +422,7 @@ void computeModes (const ModeParams& params, ModeSet& out) noexcept
         case Model::String:   computeString (params, out);   break;
         case Model::Tube:     computeTube (params, out);     break;
         case Model::Wire:     computeWire (params, out);     break;
+        case Model::Captured: computeCaptured (params, out); break;
     }
     normalise (out);
 }

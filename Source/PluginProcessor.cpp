@@ -1,8 +1,14 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <juce_audio_formats/juce_audio_formats.h>
+
+#include <cstring>
+
 namespace
 {
+constexpr const char* kCaptureTag = "Capture"; // child of the saved state holding the capture
+
 juce::String percentText (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + "%"; }
 float percentValue (const juce::String& t) { return t.getFloatValue() / 100.0f; }
 
@@ -159,10 +165,17 @@ MaterialPercussionProcessor::MaterialPercussionProcessor()
     for (auto& l : bodyLevels)
         l.store (0.0f);
 
-    lastModeParams = getModeParams();
+    lastModeParams = getModeParams (audioCapture.get());
     mp::computeModes (lastModeParams, modeSet);
-    lastBodyOn = getBodyParams (lastBodyParams);
+    lastBodyOn = getBodyParams (lastBodyParams, audioCapture.get());
     mp::computeModes (lastBodyParams, bodyModeSet);
+}
+
+MaterialPercussionProcessor::~MaterialPercussionProcessor()
+{
+    cancelLoad = true;
+    loader.removeAllJobs (true, 10000);
+    cancelPendingUpdate();
 }
 
 float MaterialPercussionProcessor::param (const char* id) const noexcept
@@ -172,7 +185,18 @@ float MaterialPercussionProcessor::param (const char* id) const noexcept
 }
 
 //==============================================================================
-mp::ModeParams MaterialPercussionProcessor::getModeParams() const noexcept
+namespace
+{
+// Only the Captured model looks at the capture, so other models don't recompute when it changes.
+void attachCapture (mp::ModeParams& p, const mp::CaptureData* capture) noexcept
+{
+    const bool use = p.model == mp::Model::Captured && capture != nullptr;
+    p.capture = use ? &capture->modes : nullptr;
+    p.captureId = use ? capture->id : 0;
+}
+} // namespace
+
+mp::ModeParams MaterialPercussionProcessor::getModeParams (const mp::CaptureData* capture) const noexcept
 {
     mp::ModeParams p;
     p.model = (mp::Model) juce::jlimit (0, mp::kNumModels - 1, (int) std::lround (param (ids::model)));
@@ -180,16 +204,18 @@ mp::ModeParams MaterialPercussionProcessor::getModeParams() const noexcept
     p.position = param (ids::position);
     p.decay = param (ids::decay);
     p.damping = param (ids::damping);
+    attachCapture (p, capture);
     return p;
 }
 
-bool MaterialPercussionProcessor::getBodyParams (mp::ModeParams& out) const noexcept
+bool MaterialPercussionProcessor::getBodyParams (mp::ModeParams& out, const mp::CaptureData* capture) const noexcept
 {
     const int choice = juce::jlimit (0, mp::kNumModels, (int) std::lround (param (ids::bodyModel)));
-    out = getModeParams();
+    out = getModeParams (nullptr);
     out.model = (mp::Model) juce::jmax (0, choice - 1);
     out.decay = param (ids::bodyDecay);
     out.shape = 0.5f;
+    attachCapture (out, capture);
     return choice > 0;
 }
 
@@ -212,14 +238,14 @@ mp::VoiceSettings MaterialPercussionProcessor::readVoiceSettings() const noexcep
     s.gap = param (ids::gap);
 
     mp::ModeParams bodyParams;
-    s.bodyOn = getBodyParams (bodyParams);
+    s.bodyOn = getBodyParams (bodyParams, nullptr);
     s.bodyTune = param (ids::bodyTune);
     s.bodyBlend = param (ids::bodyBlend);
     s.bodyCouple = param (ids::bodyCouple);
     s.bodyGain = mp::getModelInfo (bodyParams.model).gain;
 
     s.width = param (ids::width);
-    s.gain = mp::getModelInfo (getModeParams().model).gain;
+    s.gain = mp::getModelInfo (getModeParams (nullptr).model).gain;
     return s;
 }
 
@@ -228,10 +254,10 @@ void MaterialPercussionProcessor::prepareToPlay (double sampleRate, int)
     for (auto& v : voices)
         v.prepare (sampleRate);
 
-    lastModeParams = getModeParams();
+    lastModeParams = getModeParams (audioCapture.get());
     mp::computeModes (lastModeParams, modeSet);
     ++modeSetVersion;
-    lastBodyOn = getBodyParams (lastBodyParams);
+    lastBodyOn = getBodyParams (lastBodyParams, audioCapture.get());
     mp::computeModes (lastBodyParams, bodyModeSet);
     ++bodyModeSetVersion;
 
@@ -258,7 +284,19 @@ void MaterialPercussionProcessor::processBlock (juce::AudioBuffer<float>& buffer
     // Merge in hits triggered from the UI (clicking the object).
     keyboardState.processNextMidiBuffer (midi, 0, numSamples, true);
 
-    const auto params = getModeParams();
+    // Pick up a newly loaded capture. Swapping shared_ptrs neither allocates nor frees; the
+    // old one goes back to the message thread through pendingCapture.
+    if (captureSwapLock.tryEnter())
+    {
+        if (pendingCaptureChanged)
+        {
+            std::swap (audioCapture, pendingCapture);
+            pendingCaptureChanged = false;
+        }
+        captureSwapLock.exit();
+    }
+
+    const auto params = getModeParams (audioCapture.get());
     if (! (params == lastModeParams))
     {
         mp::computeModes (params, modeSet);
@@ -267,7 +305,7 @@ void MaterialPercussionProcessor::processBlock (juce::AudioBuffer<float>& buffer
     }
 
     mp::ModeParams bodyParams;
-    const bool bodyOn = getBodyParams (bodyParams);
+    const bool bodyOn = getBodyParams (bodyParams, audioCapture.get());
     if (bodyOn != lastBodyOn || ! (bodyParams == lastBodyParams))
     {
         mp::computeModes (bodyParams, bodyModeSet);
@@ -282,6 +320,10 @@ void MaterialPercussionProcessor::processBlock (juce::AudioBuffer<float>& buffer
     context.bodyVersion = bodyModeSetVersion;
     context.params = params;
     context.settings = readVoiceSettings();
+    context.sample = {};
+    if (audioCapture != nullptr && ! audioCapture->residual.empty())
+        context.sample = { audioCapture->residual.data(), (int) audioCapture->residual.size(),
+                           audioCapture->residualRate, audioCapture->residualForceNorm };
 
     for (auto& v : voices)
         v.clearPeaks();
@@ -393,6 +435,8 @@ juce::AudioProcessorEditor* MaterialPercussionProcessor::createEditor()
 void MaterialPercussionProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
+    if (auto capture = getCapture())
+        state.appendChild (captureToTree (*capture), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -401,7 +445,220 @@ void MaterialPercussionProcessor::setStateInformation (const void* data, int siz
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+        {
+            auto tree = juce::ValueTree::fromXml (*xml);
+            const auto captureTree = tree.getChildWithName (kCaptureTag);
+            if (captureTree.isValid())
+                tree.removeChild (captureTree, nullptr);
+            apvts.replaceState (tree);
+
+            // A state without a capture clears the current one: it belongs to the old patch.
+            installCapture (captureTree.isValid() ? captureFromTree (captureTree) : nullptr, false);
+        }
+}
+
+//==============================================================================
+// Capture
+
+namespace
+{
+juce::String floatsToText (const float* data, size_t count)
+{
+    return juce::MemoryBlock (data, count * sizeof (float)).toBase64Encoding();
+}
+
+std::vector<float> textToFloats (const juce::String& text)
+{
+    juce::MemoryBlock block;
+    if (! block.fromBase64Encoding (text))
+        return {};
+    std::vector<float> out (block.getSize() / sizeof (float));
+    std::memcpy (out.data(), block.getData(), out.size() * sizeof (float));
+    return out;
+}
+
+// Reads up to 30 s of the file, mixed to mono, and analyses it.
+juce::String readAndAnalyse (const juce::File& file, mp::CaptureData& out, const std::atomic<bool>& cancel)
+{
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    if (reader == nullptr)
+        return "Can't read " + file.getFileName() + " as audio";
+    if (reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0)
+        return file.getFileName() + " has no audio in it";
+
+    const int numSamples = (int) std::min<juce::int64> (reader->lengthInSamples, (juce::int64) (30.0 * reader->sampleRate));
+    const int numChannels = (int) juce::jlimit (1u, 8u, reader->numChannels);
+    juce::AudioBuffer<float> buffer (numChannels, numSamples);
+    if (! reader->read (buffer.getArrayOfWritePointers(), numChannels, 0, numSamples))
+        return "Can't read " + file.getFileName();
+
+    std::vector<float> mono ((size_t) numSamples, 0.0f);
+    for (int ch = 0; ch < numChannels; ++ch)
+        juce::FloatVectorOperations::addWithMultiply (mono.data(), buffer.getReadPointer (ch), 1.0f / (float) numChannels, numSamples);
+
+    const auto error = mp::analyseRecording (mono.data(), numSamples, reader->sampleRate, out, &cancel);
+    out.name = file.getFileNameWithoutExtension().toStdString();
+    return juce::String (error);
+}
+} // namespace
+
+juce::String MaterialPercussionProcessor::getCaptureWildcard()
+{
+    return "*.wav;*.aif;*.aiff;*.flac;*.ogg";
+}
+
+void MaterialPercussionProcessor::loadCaptureFile (const juce::File& file)
+{
+    // Only one analysis at a time: stop any that is still running.
+    cancelLoad = true;
+    loader.removeAllJobs (true, 10000);
+    cancelLoad = false;
+
+    {
+        const juce::ScopedLock sl (loadLock);
+        loadBusy = true;
+        loadMessage = "Analysing " + file.getFileName() + "...";
+    }
+
+    loader.addJob ([this, file]
+    {
+        auto data = std::make_shared<mp::CaptureData>();
+        const auto error = readAndAnalyse (file, *data, cancelLoad);
+        if (cancelLoad)
+            return;
+        {
+            const juce::ScopedLock sl (loadLock);
+            loadBusy = false;
+            loadMessage = error;
+            if (error.isEmpty())
+                loadedCapture = std::move (data);
+        }
+        triggerAsyncUpdate();
+    });
+}
+
+void MaterialPercussionProcessor::handleAsyncUpdate()
+{
+    std::shared_ptr<mp::CaptureData> data;
+    {
+        const juce::ScopedLock sl (loadLock);
+        data = std::move (loadedCapture);
+        loadedCapture.reset();
+    }
+    if (data != nullptr)
+        installCapture (std::move (data), true);
+}
+
+std::shared_ptr<const mp::CaptureData> MaterialPercussionProcessor::getCapture() const
+{
+    const juce::ScopedLock sl (uiCaptureLock);
+    return uiCapture;
+}
+
+bool MaterialPercussionProcessor::isCaptureBusy() const
+{
+    const juce::ScopedLock sl (loadLock);
+    return loadBusy;
+}
+
+juce::String MaterialPercussionProcessor::getCaptureMessage() const
+{
+    const juce::ScopedLock sl (loadLock);
+    return loadMessage;
+}
+
+void MaterialPercussionProcessor::installCapture (std::shared_ptr<mp::CaptureData> data, bool setKnobs)
+{
+    if (data != nullptr)
+        data->id = nextCaptureId++;
+    std::shared_ptr<const mp::CaptureData> capture = std::move (data);
+
+    {
+        const juce::ScopedLock sl (uiCaptureLock);
+        uiCapture = capture;
+    }
+
+    // Hand it to the audio thread. Whatever was pending before is released here, outside
+    // the spin lock, on this thread.
+    std::shared_ptr<const mp::CaptureData> old = capture;
+    {
+        const juce::SpinLock::ScopedLockType sl (captureSwapLock);
+        std::swap (pendingCapture, old);
+        pendingCaptureChanged = true;
+    }
+    old.reset();
+
+    if (setKnobs && capture != nullptr)
+    {
+        // Switch to the capture with every knob at its neutral setting, so the first hit
+        // sounds like the recording.
+        setParameter (ids::model, (float) mp::Model::Captured);
+        setParameter (ids::pitch, capture->modes.refHz);
+        setParameter (ids::shape, 0.5f);
+        setParameter (ids::position, 0.5f);
+        setParameter (ids::decay, 1.0f);
+        setParameter (ids::damping, 0.5f);
+        setParameter (ids::exciter, (float) mp::ExciterType::Sample);
+        setParameter (ids::hardness, 1.0f);
+        setParameter (ids::color, 0.5f);
+        setParameter (ids::bounce, 0.0f);
+        setParameter (ids::noise, 1.0f);
+    }
+}
+
+void MaterialPercussionProcessor::setParameter (const char* id, float value)
+{
+    if (auto* p = apvts.getParameter (id))
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (value));
+        p->endChangeGesture();
+    }
+}
+
+juce::ValueTree MaterialPercussionProcessor::captureToTree (const mp::CaptureData& data)
+{
+    std::vector<float> modes;
+    for (const auto& m : data.modes.modes)
+        modes.insert (modes.end(), { m.hz, m.amp, m.t60 });
+
+    juce::ValueTree tree (kCaptureTag);
+    tree.setProperty ("name", juce::String (data.name), nullptr);
+    tree.setProperty ("refHz", data.modes.refHz, nullptr);
+    tree.setProperty ("rate", data.residualRate, nullptr);
+    tree.setProperty ("forceNorm", data.residualForceNorm, nullptr);
+    tree.setProperty ("seconds", data.seconds, nullptr);
+    tree.setProperty ("modes", floatsToText (modes.data(), modes.size()), nullptr);
+    tree.setProperty ("residual", floatsToText (data.residual.data(), data.residual.size()), nullptr);
+    tree.setProperty ("overview", floatsToText (data.overview.data(), data.overview.size()), nullptr);
+    return tree;
+}
+
+std::shared_ptr<mp::CaptureData> MaterialPercussionProcessor::captureFromTree (const juce::ValueTree& tree)
+{
+    auto data = std::make_shared<mp::CaptureData>();
+    data->name = tree.getProperty ("name").toString().toStdString();
+    data->modes.refHz = juce::jlimit (1.0f, 20000.0f, (float) tree.getProperty ("refHz", 100.0f));
+    data->residualRate = juce::jlimit (1000.0, 768000.0, (double) tree.getProperty ("rate", 48000.0));
+    data->residualForceNorm = (float) tree.getProperty ("forceNorm", 1.0f);
+    data->seconds = (float) tree.getProperty ("seconds", 0.0f);
+
+    const auto modes = textToFloats (tree.getProperty ("modes").toString());
+    for (size_t i = 0; i + 2 < modes.size() && data->modes.modes.size() < (size_t) mp::kMaxModes; i += 3)
+        if (std::isfinite (modes[i]) && std::isfinite (modes[i + 1]) && std::isfinite (modes[i + 2]) && modes[i] > 0.0f)
+            data->modes.modes.push_back ({ modes[i], modes[i + 1], juce::jlimit (0.005f, 60.0f, modes[i + 2]) });
+
+    data->residual = textToFloats (tree.getProperty ("residual").toString());
+    for (auto& v : data->residual)
+        if (! std::isfinite (v))
+            v = 0.0f;
+    data->overview = textToFloats (tree.getProperty ("overview").toString());
+
+    if (data->modes.modes.empty())
+        return nullptr;
+    return data;
 }
 
 //==============================================================================

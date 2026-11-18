@@ -48,6 +48,32 @@ void ObjectView::update (mp::Model newModel, float newShape, float newPosition, 
         repaint();
 }
 
+void ObjectView::setCapture (const std::shared_ptr<const mp::CaptureData>& data, const juce::String& message, bool busy)
+{
+    const int id = data != nullptr ? data->id : 0;
+    if (id == captureId && message == captureMessage && busy == captureBusy)
+        return;
+
+    if (id != captureId)
+    {
+        overview = data != nullptr ? data->overview : std::vector<float>();
+        captureName = data != nullptr ? juce::String (data->name) : juce::String();
+        captureId = id;
+    }
+    captureMessage = message;
+    captureBusy = busy;
+    repaint();
+}
+
+void ObjectView::setDropHighlight (bool on)
+{
+    if (on != dropHighlight)
+    {
+        dropHighlight = on;
+        repaint();
+    }
+}
+
 //==============================================================================
 ObjectView::Geometry ObjectView::geometry() const
 {
@@ -104,6 +130,10 @@ ObjectView::Geometry ObjectView::geometry() const
             geo.rect = juce::Rectangle<float> (tw, th).withCentre (geo.centre);
             break;
         }
+
+        case mp::Model::Captured:
+            geo.rect = juce::Rectangle<float> (w * 0.92f, h * 0.62f).withCentre (geo.centre);
+            break;
     }
     return geo;
 }
@@ -144,6 +174,9 @@ juce::Point<float> ObjectView::strikePointFor (float pos) const
 
         case mp::Model::Tube:
             return { geo.rect.getX() + geo.rect.getWidth() * (float) mp::tubeX (pos), geo.rect.getY() };
+
+        case mp::Model::Captured:
+            return { geo.rect.getX() + geo.rect.getWidth() * (float) mp::barX (pos), geo.rect.getCentreY() };
     }
     return geo.centre;
 }
@@ -159,6 +192,7 @@ float ObjectView::positionFor (juce::Point<float> pt) const
             break;
 
         case mp::Model::Wood:
+        case mp::Model::Captured:
             p = std::abs (0.5f - (pt.x - geo.rect.getX()) / geo.rect.getWidth()) / 0.48f;
             break;
 
@@ -194,6 +228,12 @@ float ObjectView::positionFor (juce::Point<float> pt) const
 //==============================================================================
 void ObjectView::mouseDown (const juce::MouseEvent& e)
 {
+    if (model == mp::Model::Captured && captureId <= 0 && ! captureBusy)
+    {
+        if (onLoadRequest != nullptr)
+            onLoadRequest();
+        return;
+    }
     if (onStrike != nullptr)
         onStrike (positionFor (e.position));
 }
@@ -225,7 +265,8 @@ void ObjectView::paint (juce::Graphics& g)
     g.drawText (juce::String (mp::getModelInfo (model).name).toUpperCase(), text.removeFromTop (16.0f),
                 juce::Justification::centredLeft);
     g.setFont (juce::Font (juce::FontOptions (11.0f)));
-    g.drawText ("click to strike", bounds.reduced (16.0f, 10.0f).removeFromTop (16.0f), juce::Justification::centredRight);
+    if (model != mp::Model::Captured) // the Load button sits there instead
+        g.drawText ("click to strike", bounds.reduced (16.0f, 10.0f).removeFromTop (16.0f), juce::Justification::centredRight);
 
     const float shown = hoverPosition >= 0.0f ? hoverPosition : position;
     g.drawText ("Position " + juce::String (juce::roundToInt (shown * 100.0f)) + "%",
@@ -247,13 +288,28 @@ void ObjectView::paint (juce::Graphics& g)
             case mp::Model::String:   drawString (g, geo, false); break;
             case mp::Model::Wire:     drawString (g, geo, true);  break;
             case mp::Model::Tube:     drawTube (g, geo);          break;
+            case mp::Model::Captured: drawCaptured (g, geo);      break;
         }
     }
 
-    if (hoverPosition >= 0.0f)
-        drawMarker (g, strikePointFor (hoverPosition), 0.45f, false);
-    drawExciter (g, strikePointFor (position));
-    drawMarker (g, strikePointFor (position), 1.0f, true);
+    const bool emptyCapture = model == mp::Model::Captured && captureId <= 0;
+    if (! emptyCapture)
+    {
+        if (hoverPosition >= 0.0f)
+            drawMarker (g, strikePointFor (hoverPosition), 0.45f, false);
+        drawExciter (g, strikePointFor (position));
+        drawMarker (g, strikePointFor (position), 1.0f, true);
+    }
+
+    if (dropHighlight)
+    {
+        g.setColour (theme.accent.withAlpha (0.12f));
+        g.fillRoundedRectangle (bounds.reduced (2.0f), 9.0f);
+        g.setColour (theme.accent);
+        g.drawRoundedRectangle (bounds.reduced (1.5f), 10.0f, 3.0f);
+        g.setFont (juce::Font (juce::FontOptions (14.0f)).boldened());
+        g.drawText ("Drop to capture", bounds.withTrimmedTop (bounds.getHeight() * 0.8f), juce::Justification::centredTop);
+    }
 
     // Exciter name by the strike point's corner, coupled body in the other corner
     auto footer = bounds.reduced (16.0f, 10.0f).removeFromBottom (14.0f);
@@ -310,6 +366,22 @@ void ObjectView::drawExciter (juce::Graphics& g, juce::Point<float> p)
             }
             break;
         }
+        case mp::ExciterType::Sample:
+        {
+            // A stick with the recorded click radiating from the contact
+            const auto head = p + juce::Point<float> (14.0f, -16.0f);
+            g.drawLine ({ head, head + juce::Point<float> (26.0f, -22.0f) }, 2.5f);
+            g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre (head));
+            for (int i = 1; i <= 3; ++i)
+            {
+                juce::Path arc;
+                const float r = 8.0f + 7.0f * (float) i;
+                arc.addCentredArc (p.x, p.y, r, r, 0.0f, -2.6f, -1.6f, true);
+                g.setColour (col.withAlpha (0.8f - 0.2f * (float) i));
+                g.strokePath (arc, juce::PathStrokeType (1.5f));
+            }
+            break;
+        }
         case mp::ExciterType::Feedback:
         {
             juce::Path loop;
@@ -353,6 +425,56 @@ void ObjectView::drawTube (juce::Graphics& g, const Geometry& geo)
     g.fillRect (juce::Rectangle<float> (3.0f + 6.0f * stopped, r.getHeight()).withPosition (r.getX() - 3.0f, r.getY()));
     g.setColour (theme.accent2.withAlpha (0.7f));
     g.drawEllipse (juce::Rectangle<float> (10.0f, r.getHeight()).withCentre ({ r.getRight(), r.getCentreY() }), 1.5f);
+}
+
+void ObjectView::drawCaptured (juce::Graphics& g, const Geometry& geo)
+{
+    const auto r = geo.rect;
+    g.setFont (juce::Font (juce::FontOptions (13.0f)));
+
+    if (captureId <= 0)
+    {
+        // Empty: a dashed drop zone with instructions (or progress / the last error)
+        juce::Path outline, dashed;
+        outline.addRoundedRectangle (r, 8.0f);
+        const float dashes[] = { 6.0f, 5.0f };
+        juce::PathStrokeType (1.5f).createDashedStroke (dashed, outline, dashes, 2);
+        g.setColour (theme.accent2.withAlpha (0.7f));
+        g.fillPath (dashed);
+
+        juce::String text = "Drop a recording of a single hit here\n(WAV, AIFF, FLAC or OGG)\n\nor click to choose a file";
+        if (captureBusy)
+            text = captureMessage;
+        else if (captureMessage.isNotEmpty())
+            text = captureMessage + "\n\nDrop or click to try another file";
+        g.setColour (theme.text);
+        g.drawFittedText (text, r.reduced (12.0f).toNearestInt(), juce::Justification::centred, 6);
+        return;
+    }
+
+    // The recording's envelope, mirrored about the centre line (square-root scaled so the
+    // tail stays visible), drawn as the "object".
+    const int n = (int) overview.size();
+    const float cy = r.getCentreY(), half = r.getHeight() * 0.5f;
+    juce::Path wave;
+    wave.startNewSubPath (r.getX(), cy);
+    for (int i = 0; i < n; ++i)
+        wave.lineTo (r.getX() + r.getWidth() * (float) i / (float) juce::jmax (1, n - 1), cy - half * std::sqrt (overview[(size_t) i]));
+    for (int i = n - 1; i >= 0; --i)
+        wave.lineTo (r.getX() + r.getWidth() * (float) i / (float) juce::jmax (1, n - 1), cy + half * std::sqrt (overview[(size_t) i]));
+    wave.closeSubPath();
+
+    g.setColour (theme.accent2.withAlpha (0.18f + 0.25f * energy));
+    g.fillPath (wave);
+    g.setColour (theme.accent2.withAlpha (0.85f));
+    g.strokePath (wave, juce::PathStrokeType (1.5f + 1.5f * energy));
+    g.setColour (theme.textDim.withAlpha (0.35f));
+    g.drawHorizontalLine (juce::roundToInt (cy), r.getX(), r.getRight());
+
+    g.setColour (theme.textDim);
+    g.setFont (juce::Font (juce::FontOptions (12.0f)));
+    const auto label = captureBusy ? captureMessage : captureName;
+    g.drawText (label, r.withY (r.getBottom() + 4.0f).withHeight (16.0f), juce::Justification::centred);
 }
 
 void ObjectView::drawMarker (juce::Graphics& g, juce::Point<float> p, float alpha, bool solid)

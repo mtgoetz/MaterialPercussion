@@ -25,6 +25,9 @@ const ExciterInfo kExciterInfos[kNumExciters] = {
     { "Feedback",  "Feed its own sound back in: howls, drones, e-bow sustain",
       "Drive",     "Feedback gain: gentle sustain (left) to screaming overdrive (right)",
       "Colour: picks which modes take over - low drone (left) to high whistle (right)", true },
+    { "Sample",    "The attack of the captured recording: its real stick click, scrape or slap",
+      "Strike",    "The recorded attack pushes the object (left) to a clean hit with the attack heard on top (right)",
+      "Colour: tone of the recorded attack - dark (left) to bright (right)", false },
 };
 
 // Which mode-picking filter the Colour knob selects. bypass when near the middle.
@@ -62,7 +65,8 @@ float exciterSpectrum (ExciterType type, float hz, float hardness, float color) 
         case ExciterType::Particles: return strikeSpectrum (hz, strikeWidthSeconds (color));
         case ExciterType::Bow:
         case ExciterType::Scrape:
-        case ExciterType::Feedback:  break;
+        case ExciterType::Feedback:
+        case ExciterType::Sample:    break;
     }
     return (float) onePoleMag (colorShape (color), hz);
 }
@@ -87,6 +91,16 @@ void Exciter::reset() noexcept
     colorState = 0.0;
     grainLength = grainPos = 0;
     fbDcX = fbDcY = 0.0;
+    samplePos = -1.0;
+    direct = 0.0;
+}
+
+void Exciter::setSample (const SampleSource& source) noexcept
+{
+    sample = source;
+    sampleStep = sample.rate / sampleRate;
+    if (sample.data == nullptr || sample.length < 2)
+        samplePos = -1.0;
 }
 
 void Exciter::update (const VoiceSettings& s) noexcept
@@ -122,6 +136,22 @@ void Exciter::trigger (float newVelocity, const VoiceSettings& s) noexcept
         return;
     }
 
+    if (type == ExciterType::Sample)
+    {
+        // A clean single-sample impulse (Strike), which rings every mode at its measured
+        // level, plus the recorded attack.
+        startImpulse (velocity * s.hardness);
+        sampleGain = velocity;
+        samplePos = (sample.data != nullptr && sample.length >= 2) ? 0.0 : -1.0;
+
+        bouncesLeft = (int) std::lround (s.bounce * 10.0f);
+        bounceInterval = (0.03 + 0.11 * s.bounce) * sampleRate;
+        bounceTimer = bounceInterval;
+        bounceAmp = velocity;
+        noiseLevel = 0.0;
+        return;
+    }
+
     // Continuous exciters: (re)start the envelope from wherever it is now.
     const double len = std::max (0.02, (double) s.length);
     const double attack = std::clamp (0.12 * len, 0.003, 0.25);
@@ -142,6 +172,33 @@ void Exciter::startPulse (float h, float amplitude) noexcept
     pulseLength = std::max (2, (int) std::lround (strikeWidthSeconds (h) * sampleRate));
     pulsePos = 0;
     pulseScale = amplitude / (double) pulseLength; // unit-area pulse scaled by amplitude
+}
+
+void Exciter::startImpulse (float amplitude) noexcept
+{
+    pulseLength = 1;
+    pulsePos = 0;
+    pulseScale = 0.5 * amplitude; // a one-sample raised cosine peaks at 2 x scale
+}
+
+double Exciter::nextSample() noexcept
+{
+    if (samplePos < 0.0 || sample.data == nullptr)
+        return 0.0;
+
+    const int i = (int) samplePos;
+    if (i + 1 >= sample.length)
+    {
+        samplePos = -1.0;
+        return 0.0;
+    }
+    const double frac = samplePos - i;
+    const double v = sampleGain * (sample.data[i] + frac * (sample.data[i + 1] - sample.data[i]));
+    samplePos += sampleStep;
+
+    const double c = colorFilter (v);
+    direct = c * noise;                                   // Attack: heard as recorded
+    return c * (1.0 - hardness) * sample.forceNorm;       // low Strike: the attack drives the object
 }
 
 double Exciter::nextPulse() noexcept
@@ -198,12 +255,29 @@ void Exciter::advanceEnvelope() noexcept
 bool Exciter::isActive() const noexcept
 {
     return pulsePos < pulseLength || bouncesLeft > 0 || noiseLevel > 1.0e-6 || stage != Stage::Idle
-        || grainPos < grainLength;
+        || grainPos < grainLength || samplePos >= 0.0;
 }
 
 double Exciter::tick (const ExciterContext& ctx) noexcept
 {
+    direct = 0.0;
     double e = nextPulse();
+
+    if (type == ExciterType::Sample)
+    {
+        if (bouncesLeft > 0 && (bounceTimer -= 1.0) <= 0.0)
+        {
+            bounceAmp *= 0.62f;
+            bounceInterval = std::max (bounceInterval * 0.78, 2.0);
+            bounceTimer = bounceInterval;
+            startImpulse (bounceAmp * hardness);
+            sampleGain = bounceAmp; // every bounce is another recorded contact
+            if (sample.data != nullptr && sample.length >= 2)
+                samplePos = 0.0;
+            --bouncesLeft;
+        }
+        return e + nextSample();
+    }
 
     if (type == ExciterType::Mallet)
     {
@@ -297,6 +371,7 @@ double Exciter::tick (const ExciterContext& ctx) noexcept
         }
 
         case ExciterType::Mallet:
+        case ExciterType::Sample:
             break;
     }
     return e;

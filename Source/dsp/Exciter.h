@@ -34,7 +34,14 @@ public:
     // Call once per block (or control interval) before ticking.
     void update (const VoiceSettings& settings) noexcept;
 
+    // The recorded attack for the Sample exciter. Call every block: the data can change.
+    void setSample (const SampleSource& source) noexcept;
+
     double tick (const ExciterContext& ctx) noexcept;
+
+    // Sound that goes straight to the output rather than into the object (the recorded
+    // attack of the Sample exciter). Valid after each tick.
+    double getDirect() const noexcept { return direct; }
 
     bool isActive() const noexcept;
     float getEnvelope() const noexcept { return (float) env; }
@@ -43,7 +50,9 @@ private:
     enum class Stage { Idle, Attack, Hold, Release };
 
     void startPulse (float hardness, float amplitude) noexcept;
+    void startImpulse (float amplitude) noexcept;
     double nextPulse() noexcept;
+    double nextSample() noexcept;
     double colorFilter (double x) noexcept;
     double white() noexcept;      // uniform, unit variance
     double uniform01() noexcept;  // (0, 1]
@@ -83,6 +92,12 @@ private:
 
     // Feedback
     double fbDcX = 0.0, fbDcY = 0.0, dcCoef = 0.0;
+
+    // Sample playback
+    SampleSource sample;
+    double samplePos = -1.0, sampleStep = 1.0;
+    float sampleGain = 0.0f;
+    double direct = 0.0;
 
     std::uint32_t rng = 0x2545f491u;
 };

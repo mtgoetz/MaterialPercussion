@@ -42,19 +42,24 @@ MaterialPercussionEditor::MaterialPercussionEditor (MaterialPercussionProcessor&
     addAndMakeVisible (objectView);
     addAndMakeVisible (modeDisplay);
 
+    // Capture: the Load button sits on top of the object view (shown for the Captured model)
+    objectView.onLoadRequest = [this] { chooseCaptureFile(); };
+    loadButton.onClick = [this] { chooseCaptureFile(); };
+    addChildComponent (loadButton);
+
     // Object
     addKnob (objectSection, ids::pitch, "Pitch", "Frequency of the lowest mode (MIDI notes transpose from C3)");
-    addKnob (objectSection, ids::decay, "Decay", "How long the object rings");
-    addKnob (objectSection, ids::damping, "Damping", "How much faster high modes die than low ones");
+    decayKnob = addKnob (objectSection, ids::decay, "Decay", "How long the object rings");
+    dampingKnob = addKnob (objectSection, ids::damping, "Damping", "How much faster high modes die than low ones");
     shapeKnob = addKnob (objectSection, ids::shape, "Shape", "");
-    addKnob (objectSection, ids::position, "Position", "Where it is hit: centre (dull) to edge (bright, more modes)");
+    positionKnob = addKnob (objectSection, ids::position, "Position", "Where it is hit: centre (dull) to edge (bright, more modes)");
 
     // Exciter
     hardnessKnob = addKnob (exciterSection, ids::hardness, "Hardness", "");
     colorKnob = addKnob (exciterSection, ids::color, "Colour", "");
     lengthKnob = addKnob (exciterSection, ids::length, "Length", "How long it keeps bowing / scraping / shaking / feeding back (or hold the key)");
     bounceKnob = addKnob (exciterSection, ids::bounce, "Bounce", "Mallet bounces: one clean hit (left) to a dropped stick rattling to rest");
-    addKnob (exciterSection, ids::noise, "Noise", "Adds noise to the excitation: a scrape on the strike, breath on the bow");
+    noiseKnob = addKnob (exciterSection, ids::noise, "Noise", "Adds noise to the excitation: a scrape on the strike, breath on the bow");
 
     // Nonlinear
     addKnob (nonlinearSection, ids::drop, "Pitch Drop", "Pitch jumps up on impact and settles, like a tight drum head");
@@ -159,14 +164,23 @@ juce::String MaterialPercussionEditor::currentHint() const
     const auto exciterType = (mp::ExciterType) juce::roundToInt (proc.apvts.getRawParameterValue (ids::exciter)->load());
     const auto& exciter = mp::getExciterInfo (exciterType);
 
+    const bool captured = displayParams.model == mp::Model::Captured;
     for (auto* k : knobs)
         if (k->isVisible() && k->isHovered())
         {
             if (k == shapeKnob)    return k->getLabel() + ":  " + model.shapeHint;
             if (k == hardnessKnob) return k->getLabel() + ":  " + exciter.amountHint;
             if (k == colorKnob)    return exciter.colorHint;
+            if (k == noiseKnob && exciterType == mp::ExciterType::Sample)
+                return "Attack:  how loud the recorded attack is, heard on top of the ringing modes";
+            if (captured && k == decayKnob)    return "Decay:  scales the recorded ring times (1 s = as recorded)";
+            if (captured && k == dampingKnob)  return "Damping:  high modes ring longer (left) or die faster (right) than recorded; 50% = as recorded";
+            if (captured && k == positionKnob) return "Position:  darker (left) or brighter (right) than recorded; 50% = as recorded";
             return k->getLabel() + ":  " + k->hint;
         }
+
+    if (loadButton.isVisible() && loadButton.isMouseOver())
+        return "Load sound:  analyse a recording of one hit into modes + attack (or drop a file anywhere here)";
 
     for (int i = 0; i < modelButtons.size(); ++i)
         if (modelButtons[i]->isMouseOver())
@@ -188,7 +202,8 @@ juce::String MaterialPercussionEditor::currentHint() const
 //==============================================================================
 void MaterialPercussionEditor::timerCallback()
 {
-    const auto params = proc.getModeParams();
+    displayCapture = proc.getCapture();
+    const auto params = proc.getModeParams (displayCapture.get());
     if (! haveDisplayModes || ! (params == displayParams))
     {
         mp::computeModes (params, displayModes);
@@ -196,7 +211,7 @@ void MaterialPercussionEditor::timerCallback()
     }
 
     mp::ModeParams bodyParams;
-    const bool bodyOn = proc.getBodyParams (bodyParams);
+    const bool bodyOn = proc.getBodyParams (bodyParams, displayCapture.get());
     if (! haveDisplayModes || bodyOn != displayBodyOn || ! (bodyParams == displayBodyParams))
     {
         mp::computeModes (bodyParams, displayBodyModes);
@@ -240,6 +255,9 @@ void MaterialPercussionEditor::timerCallback()
 
     objectView.update (params.model, params.shape, params.position, juce::jlimit (0.0f, 1.0f, energy * 2.0f), settings.exciter,
                        bodyOn ? juce::String (mp::getModelInfo (bodyParams.model).name) : juce::String());
+    objectView.setCapture (displayCapture, proc.getCaptureMessage(), proc.isCaptureBusy());
+    loadButton.setVisible (params.model == mp::Model::Captured);
+    noiseKnob->setLabel (settings.exciter == mp::ExciterType::Sample ? "Attack" : "Noise");
 
     for (int i = 0; i < modelButtons.size(); ++i)
         modelButtons[i]->setToggleState (i == (int) params.model, juce::dontSendNotification);
@@ -322,6 +340,7 @@ void MaterialPercussionEditor::resized()
     b.removeFromTop (10);
     auto views = b.removeFromTop (290);
     objectView.setBounds (views.removeFromLeft (340));
+    loadButton.setBounds (objectView.getRight() - 12 - 104, objectView.getY() + 7, 104, 22);
     views.removeFromLeft (10);
     modeDisplay.setBounds (views);
     b.removeFromTop (12);
@@ -352,4 +371,54 @@ void MaterialPercussionEditor::resized()
 
     bodySection.headerReserve = 150;
     bodyBox.setBounds (bodySection.header.withLeft (bodySection.header.getRight() - 150).reduced (0, 1));
+}
+
+//==============================================================================
+void MaterialPercussionEditor::chooseCaptureFile()
+{
+    fileChooser = std::make_unique<juce::FileChooser> ("Capture a sound: pick a recording of a single hit",
+                                                       juce::File(), MaterialPercussionProcessor::getCaptureWildcard());
+    fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this] (const juce::FileChooser& chooser)
+                              {
+                                  const auto file = chooser.getResult();
+                                  if (file.existsAsFile())
+                                  {
+                                      setChoice (ids::model, (int) mp::Model::Captured);
+                                      proc.loadCaptureFile (file);
+                                  }
+                              });
+}
+
+bool MaterialPercussionEditor::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    for (const auto& f : files)
+        if (juce::File (f).hasFileExtension (MaterialPercussionProcessor::getCaptureWildcard().removeCharacters ("*")))
+            return true;
+    return false;
+}
+
+void MaterialPercussionEditor::fileDragEnter (const juce::StringArray&, int, int)
+{
+    objectView.setDropHighlight (true);
+}
+
+void MaterialPercussionEditor::fileDragExit (const juce::StringArray&)
+{
+    objectView.setDropHighlight (false);
+}
+
+void MaterialPercussionEditor::filesDropped (const juce::StringArray& files, int, int)
+{
+    objectView.setDropHighlight (false);
+    for (const auto& f : files)
+    {
+        const juce::File file (f);
+        if (file.hasFileExtension (MaterialPercussionProcessor::getCaptureWildcard().removeCharacters ("*")))
+        {
+            setChoice (ids::model, (int) mp::Model::Captured);
+            proc.loadCaptureFile (file);
+            return;
+        }
+    }
 }

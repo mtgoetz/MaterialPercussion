@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Theme.h"
+#include "dsp/Capture.h"
 #include "dsp/VoiceSettings.h"
 
 #include <functional>
+#include <memory>
 
 namespace ui
 {
@@ -16,10 +18,15 @@ public:
     ObjectView();
 
     std::function<void (float position)> onStrike;
+    std::function<void()> onLoadRequest; // clicked the empty Captured drop zone
 
     void setTheme (const Theme& t);
     void update (mp::Model model, float shape, float position, float energy,
                  mp::ExciterType exciter, const juce::String& bodyName);
+
+    // What the Captured model shows: the recording's envelope, or the drop zone.
+    void setCapture (const std::shared_ptr<const mp::CaptureData>& data, const juce::String& message, bool busy);
+    void setDropHighlight (bool on);
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -49,6 +56,7 @@ private:
     void drawBell (juce::Graphics&, const Geometry&);
     void drawString (juce::Graphics&, const Geometry&, bool wire);
     void drawTube (juce::Graphics&, const Geometry&);
+    void drawCaptured (juce::Graphics&, const Geometry&);
     void drawMarker (juce::Graphics&, juce::Point<float>, float alpha, bool solid);
     void drawExciter (juce::Graphics&, juce::Point<float>);
 
@@ -58,5 +66,11 @@ private:
     juce::String bodyName;
     float shape = 0.0f, position = 0.3f, energy = 0.0f, phase = 0.0f;
     float hoverPosition = -1.0f;
+
+    // Captured model
+    int captureId = -1;
+    std::vector<float> overview;
+    juce::String captureName, captureMessage;
+    bool captureBusy = false, dropHighlight = false;
 };
 } // namespace ui

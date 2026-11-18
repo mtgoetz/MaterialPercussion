@@ -6,8 +6,8 @@ namespace mp
 {
 //==============================================================================
 // How the object is set in motion.
-enum class ExciterType : int { Mallet = 0, Bow, Scrape, Particles, Feedback };
-constexpr int kNumExciters = 5;
+enum class ExciterType : int { Mallet = 0, Bow, Scrape, Particles, Feedback, Sample };
+constexpr int kNumExciters = 6;
 
 struct ExciterInfo
 {
@@ -23,6 +23,15 @@ const ExciterInfo& getExciterInfo (ExciterType type) noexcept;
 
 // Magnitude response (0..1) of the exciter's tone for the display.
 float exciterSpectrum (ExciterType type, float hz, float hardness, float color) noexcept;
+
+// The recorded attack the Sample exciter plays (the residual from a capture).
+struct SampleSource
+{
+    const float* data = nullptr;
+    int length = 0;
+    double rate = 48000.0;
+    float forceNorm = 1.0f; // makes it unit-energy when it pushes on an object
+};
 
 //==============================================================================
 // Block-rate settings shared by every voice. Things that change the mode set itself live

@@ -14,6 +14,7 @@ struct RenderContext
     const ModeSet* bodyModes = nullptr; // coupled body (only used when settings.bodyOn)
     int bodyVersion = 0;
     ModeParams params;                  // main object parameters (the waveguide needs them)
+    SampleSource sample;                // recorded attack for the Sample exciter
     VoiceSettings settings;
 };
 

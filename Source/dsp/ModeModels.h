@@ -2,17 +2,34 @@
 
 #include <array>
 #include <cmath>
+#include <vector>
 
 // Modal descriptions of struck objects. Everything here is plain C++ (no JUCE) so the
 // same functions drive both the audio engine and the UI visualisation.
 namespace mp
 {
-constexpr int kMaxModes = 64;
-constexpr int kNumModels = 8;
+constexpr int kMaxModes = 128;  // capacity of a mode set (captured sounds use all of it)
+constexpr int kModelModes = 64; // modes the built-in physical models generate
+constexpr int kNumModels = 9;
 
 // Membrane..String are modal (a bank of resonators); Tube and Wire are digital waveguides
 // (delay-line loops), which bend and buzz more naturally under the nonlinear controls.
-enum class Model : int { Membrane = 0, Wood, Metal, Glass, Bell, String, Tube, Wire };
+// Captured is modal, with modes measured from a recording (see Capture.h).
+enum class Model : int { Membrane = 0, Wood, Metal, Glass, Bell, String, Tube, Wire, Captured };
+
+// Modes measured from a recording: absolute frequencies, so the Pitch knob can transpose.
+struct CapturedMode
+{
+    float hz = 100.0f;
+    float amp = 0.0f;  // signed, relative
+    float t60 = 1.0f;  // seconds
+};
+
+struct CaptureModes
+{
+    std::vector<CapturedMode> modes; // sorted by frequency
+    float refHz = 100.0f;            // the frequency that plays at the Pitch knob's value
+};
 
 inline bool isWaveguide (Model m) noexcept { return m == Model::Tube || m == Model::Wire; }
 
@@ -37,6 +54,10 @@ struct ModeParams
     float position = 0.25f; // 0 = centre / dull spot, 1 = edge / bright spot
     float decay = 1.0f;     // seconds, T60 of the lowest mode before model scaling
     float damping = 0.5f;   // 0..1, how much faster the high modes die
+
+    // Captured model only. The id changes whenever a new recording is loaded.
+    const CaptureModes* capture = nullptr;
+    int captureId = 0;
 
     bool operator== (const ModeParams&) const = default;
 };

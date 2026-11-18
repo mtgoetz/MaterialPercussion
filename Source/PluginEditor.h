@@ -8,7 +8,9 @@
 #include "ui/ObjectView.h"
 #include "ui/Theme.h"
 
-class MaterialPercussionEditor : public juce::AudioProcessorEditor, private juce::Timer
+class MaterialPercussionEditor : public juce::AudioProcessorEditor,
+                                 public juce::FileDragAndDropTarget,
+                                 private juce::Timer
 {
 public:
     explicit MaterialPercussionEditor (MaterialPercussionProcessor&);
@@ -17,7 +19,14 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    // Dropping a sound file anywhere on the plugin captures it.
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void fileDragEnter (const juce::StringArray& files, int x, int y) override;
+    void fileDragExit (const juce::StringArray& files) override;
+    void filesDropped (const juce::StringArray& files, int x, int y) override;
+
 private:
+    void chooseCaptureFile();
     struct Section
     {
         juce::String title;
@@ -54,6 +63,14 @@ private:
     ui::Knob* colorKnob = nullptr;
     ui::Knob* lengthKnob = nullptr;
     ui::Knob* bounceKnob = nullptr;
+    ui::Knob* noiseKnob = nullptr;
+    ui::Knob* decayKnob = nullptr;
+    ui::Knob* dampingKnob = nullptr;
+    ui::Knob* positionKnob = nullptr;
+
+    juce::TextButton loadButton { "Load sound..." };
+    std::unique_ptr<juce::FileChooser> fileChooser;
+    std::shared_ptr<const mp::CaptureData> displayCapture; // keeps displayParams' capture alive
 
     juce::Rectangle<int> headerArea;
 
